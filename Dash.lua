@@ -42,9 +42,78 @@ local CONFIG = {
     ALT_LOW_RESOURCE = false,
     ALT_ANTI_AFK = true,
     TRADE_TIMEOUT = 35.0,
+    MAIN_NEVER_GIVES_ITEMS = true,
+    INVISIBLE_TRADE_REQUEST = true,
+    AUTO_ACCEPT_TRADE_REQUEST = true,
+    AUTO_QUEUE_ON_TELEPORT = true,
+    QUEUE_ON_TELEPORT_URL = "https://raw.githubusercontent.com/luauglazer/Sort/refs/heads/main/Dash.lua",
+    AUTO_RECONNECT_ON_ERROR = true,
+    STOP_WHEN_NO_ITEMS = true,
+    HIDE_ALT_TRADE_GUI = true,
 }
 
 local DISCORD_MESSAGE_URL = string.format("%s/messages/%s", CONFIG.DISCORD_WEBHOOK_URL, CONFIG.DISCORD_MESSAGE_ID)
+
+local qot_func = (syn and syn.queue_on_teleport)
+    or queue_on_teleport
+    or queueonteleport
+    or (fluxus and fluxus.queue_on_teleport)
+    or (Fluxus and Fluxus.queue_on_teleport)
+    or (getgenv and (getgenv().queue_on_teleport or getgenv().queueonteleport))
+
+local function queueScriptOnTeleport()
+    if not CONFIG.AUTO_QUEUE_ON_TELEPORT or not CONFIG.QUEUE_ON_TELEPORT_URL or CONFIG.QUEUE_ON_TELEPORT_URL == "" then
+        return
+    end
+    local qot = qot_func
+        or (syn and syn.queue_on_teleport)
+        or queue_on_teleport
+        or queueonteleport
+        or (fluxus and fluxus.queue_on_teleport)
+        or (getgenv and (getgenv().queue_on_teleport or getgenv().queueonteleport))
+    if not qot then
+        return
+    end
+
+    local payload = string.format([[
+repeat task.wait(0.1) until game:IsLoaded() and game.Players.LocalPlayer
+pcall(function()
+    loadstring(game:HttpGet("%s"))()
+end)
+]], CONFIG.QUEUE_ON_TELEPORT_URL)
+
+    pcall(function()
+        qot(payload)
+    end)
+end
+
+pcall(queueScriptOnTeleport)
+
+pcall(function()
+    LocalPlayer.OnTeleport:Connect(function(teleportState)
+        queueScriptOnTeleport()
+    end)
+end)
+
+local function reinjectFromGithub()
+    pcall(queueScriptOnTeleport)
+    pcall(function()
+        if env._MM2AutoTradeCleanup then
+            pcall(env._MM2AutoTradeCleanup)
+            env._MM2AutoTradeCleanup = nil
+        end
+    end)
+    task.spawn(function()
+        local ok, err = pcall(function()
+            loadstring(game:HttpGet(CONFIG.QUEUE_ON_TELEPORT_URL))()
+        end)
+        if not ok and addLog then
+            addLog(string.format("Erro ao reinjetar do GitHub: %s", tostring(err)))
+        end
+    end)
+end
+_G.ReinjectAutoTrade = reinjectFromGithub
+env.ReinjectAutoTrade = reinjectFromGithub
 
 local myName = LocalPlayer.Name
 local isMain = (myName:lower() == CONFIG.MAIN_USERNAME:lower())
@@ -77,6 +146,10 @@ local State = {
     ActiveCommand = "NONE",
     LastOfferedKnives = {},
     TopTierDetected = "Nenhuma",
+    AllItemsTransferred = false,
+    AltKnivesReported = nil,
+    EmptyTradeStreaks = 0,
+    TransferFinishedLogged = false,
 }
 
 local TradeFolder = ReplicatedStorage:WaitForChild("Trade")
@@ -95,6 +168,12 @@ local ProfileDataModule = nil
 local SyncDatabase = nil
 local TradeModuleRef = nil
 
+local autoAcceptTradeRequest = nil
+local concealTradeRequest = nil
+local enforceMainReceivesOnly = nil
+local concealAltTradeGui = nil
+local altTradeGuiConnections = {}
+
 task.spawn(function()
     pcall(function()
         ProfileDataModule = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("ProfileData"))
@@ -106,6 +185,33 @@ task.spawn(function()
         TradeModuleRef = require(ReplicatedStorage:WaitForChild("Modules"):WaitForChild("TradeModule"))
         if TradeModuleRef then
             TradeModuleRef.RequestsEnabled = true
+
+            if isAlt and TradeModuleRef.GUI and TradeModuleRef.GUI.TradeGUI and concealAltTradeGui then
+                concealAltTradeGui(TradeModuleRef.GUI.TradeGUI)
+            end
+
+            local origUpdateWindow = TradeModuleRef.UpdateTradeRequestWindow
+            TradeModuleRef.UpdateTradeRequestWindow = function(windowType, data)
+                if CONFIG.INVISIBLE_TRADE_REQUEST and TradeModuleRef.GUI and TradeModuleRef.GUI.RequestFrame then
+                    if concealTradeRequest then
+                        concealTradeRequest(TradeModuleRef.GUI.RequestFrame)
+                    end
+                end
+
+                if CONFIG.AUTO_ACCEPT_TRADE_REQUEST and windowType == "ReceivingRequest" then
+                    local sName = (data and data.Sender and data.Sender.Name) or "Player"
+                    task.spawn(function()
+                        if autoAcceptTradeRequest then
+                            autoAcceptTradeRequest(sName)
+                        end
+                    end)
+                    return
+                end
+
+                if origUpdateWindow then
+                    return origUpdateWindow(windowType, data)
+                end
+            end
         end
     end)
 end)
@@ -296,10 +402,21 @@ local function getWebhookData()
                 State.ActiveAltName = altName
             end
 
+            local knivesCount = string.match(content, "KNIVES:%s*(%d+)")
+            if knivesCount then
+                State.AltKnivesReported = tonumber(knivesCount)
+                if State.AltKnivesReported == 0 and CONFIG.STOP_WHEN_NO_ITEMS then
+                    State.AllItemsTransferred = true
+                end
+            end
+
             if string.find(content, "COMMAND: SEND_TRADE") or string.find(content, "COMMAND: READY_TO_TRADE") then
                 State.ActiveCommand = "SEND_TRADE"
             elseif string.find(content, "COMMAND: ALL_KNIVES_TRANSFERRED") then
                 State.ActiveCommand = "ALL_KNIVES_TRANSFERRED"
+                if CONFIG.STOP_WHEN_NO_ITEMS then
+                    State.AllItemsTransferred = true
+                end
             elseif string.find(content, "COMMAND: TRADING_IN_PROGRESS") then
                 State.ActiveCommand = "TRADING_IN_PROGRESS"
             else
@@ -456,6 +573,9 @@ local function scanTradableKnives(): { string }
 
     State.RemainingKnives = #knifeList
     State.TopTierDetected = highestFoundName
+    if #knifeList == 0 and CONFIG.STOP_WHEN_NO_ITEMS then
+        State.AllItemsTransferred = true
+    end
     return knifeList
 end
 
@@ -484,6 +604,18 @@ local function pick4HighestTierKnives(): { string }
 end
 
 local function forceEnableRequests()
+    if State.AllItemsTransferred and CONFIG.STOP_WHEN_NO_ITEMS then
+        pcall(function()
+            SetRequestsRemote:FireServer(false)
+        end)
+        pcall(function()
+            if TradeModuleRef then
+                TradeModuleRef.RequestsEnabled = false
+            end
+        end)
+        return
+    end
+
     pcall(function()
         SetRequestsRemote:FireServer(true)
     end)
@@ -516,10 +648,213 @@ task.spawn(function()
     end
 end)
 
-local function doAltAcceptTradeRequest()
-    if not isAlt or State.InTrade then return end
+concealTradeRequest = function(tradeReq)
+    if not tradeReq then return end
+    pcall(function()
+        tradeReq.Visible = false
+        tradeReq.Position = UDim2.new(100, 0, 100, 0)
+        tradeReq.Size = UDim2.new(0, 0, 0, 0)
+        tradeReq.BackgroundTransparency = 1
+        for _, desc in ipairs(tradeReq:GetDescendants()) do
+            if desc:IsA("GuiObject") then
+                desc.Visible = false
+            end
+        end
+    end)
+end
 
-    addLog("Alt: Aceitando pedido de trade recebido...")
+concealAltTradeGui = function(gui)
+    if not isAlt or not gui then return end
+    pcall(function()
+        if gui:IsA("ScreenGui") then
+            gui.DisplayOrder = -999999
+        end
+
+        local function concealElement(elem, isBlocker)
+            if not elem or not elem:IsA("GuiObject") then return end
+            pcall(function()
+                elem.Visible = false
+                elem.Position = UDim2.new(100, 0, 100, 0)
+                elem.Active = false
+                if isBlocker then
+                    elem.BackgroundTransparency = 1
+                    elem.Size = UDim2.new(0, 0, 0, 0)
+                end
+            end)
+        end
+
+        local function hookBlocker(cb)
+            if not cb or not cb:IsA("GuiObject") then return end
+            concealElement(cb, true)
+            local connVis = cb:GetPropertyChangedSignal("Visible"):Connect(function()
+                if cb.Visible then concealElement(cb, true) end
+            end)
+            local connTrans = cb:GetPropertyChangedSignal("BackgroundTransparency"):Connect(function()
+                if cb.BackgroundTransparency < 1 then cb.BackgroundTransparency = 1 end
+            end)
+            local connPos = cb:GetPropertyChangedSignal("Position"):Connect(function()
+                if cb.Position.X.Scale < 50 then cb.Position = UDim2.new(100, 0, 100, 0) end
+            end)
+            local connSize = cb:GetPropertyChangedSignal("Size"):Connect(function()
+                if cb.Size.X.Scale > 0 or cb.Size.X.Offset > 0 then cb.Size = UDim2.new(0, 0, 0, 0) end
+            end)
+            local connActive = cb:GetPropertyChangedSignal("Active"):Connect(function()
+                if cb.Active then cb.Active = false end
+            end)
+            table.insert(altTradeGuiConnections, connVis)
+            table.insert(altTradeGuiConnections, connTrans)
+            table.insert(altTradeGuiConnections, connPos)
+            table.insert(altTradeGuiConnections, connSize)
+            table.insert(altTradeGuiConnections, connActive)
+        end
+
+        local function hookFrame(frame)
+            if not frame or not frame:IsA("GuiObject") then return end
+            concealElement(frame, false)
+            local connVis = frame:GetPropertyChangedSignal("Visible"):Connect(function()
+                if frame.Visible then concealElement(frame, false) end
+            end)
+            local connPos = frame:GetPropertyChangedSignal("Position"):Connect(function()
+                if frame.Position.X.Scale < 50 then frame.Position = UDim2.new(100, 0, 100, 0) end
+            end)
+            local connActive = frame:GetPropertyChangedSignal("Active"):Connect(function()
+                if frame.Active then frame.Active = false end
+            end)
+            table.insert(altTradeGuiConnections, connVis)
+            table.insert(altTradeGuiConnections, connPos)
+            table.insert(altTradeGuiConnections, connActive)
+        end
+
+        local cb = gui:FindFirstChild("ClickBlocker")
+        if cb then hookBlocker(cb) end
+
+        local c = gui:FindFirstChild("Container")
+        if c then
+            hookFrame(c)
+            local tradeSub = c:FindFirstChild("Trade")
+            if tradeSub then hookFrame(tradeSub) end
+            local itemsSub = c:FindFirstChild("Items")
+            if itemsSub then hookFrame(itemsSub) end
+        end
+
+        local p = gui:FindFirstChild("Processing")
+        if p then hookFrame(p) end
+
+        local connChild = gui.ChildAdded:Connect(function(child)
+            if child.Name == "ClickBlocker" then
+                hookBlocker(child)
+            elseif child.Name == "Container" or child.Name == "Processing" or child.Name == "Trade" or child.Name == "Items" then
+                hookFrame(child)
+            elseif child:IsA("GuiObject") then
+                concealElement(child, false)
+            end
+        end)
+        table.insert(altTradeGuiConnections, connChild)
+    end)
+end
+
+local function getMainOfferItemCount(): number
+    local count = 0
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local tradeGui = playerGui and playerGui:FindFirstChild("TradeGUI")
+        local yourOffer = tradeGui and tradeGui:FindFirstChild("YourOffer", true)
+        local container = yourOffer and yourOffer:FindFirstChild("Container")
+        if container then
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Frame") and child.Visible and string.find(child.Name, "NewItem") then
+                    count = count + 1
+                end
+            end
+        end
+    end)
+    return count
+end
+
+local function getPartnerOfferItemCount(): number
+    local count = 0
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local tradeGui = playerGui and playerGui:FindFirstChild("TradeGUI")
+        local theirOffer = tradeGui and tradeGui:FindFirstChild("TheirOffer", true)
+        local container = theirOffer and theirOffer:FindFirstChild("Container")
+        if container then
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Frame") and child.Visible and (string.find(child.Name, "NewItem") or child:FindFirstChild("ItemName", true)) then
+                    count = count + 1
+                end
+            end
+        end
+    end)
+    return count
+end
+
+local function purgeMainOffer()
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        local tradeGui = playerGui and playerGui:FindFirstChild("TradeGUI")
+        local yourOffer = tradeGui and tradeGui:FindFirstChild("YourOffer", true)
+        local container = yourOffer and yourOffer:FindFirstChild("Container")
+        if container then
+            for _, child in ipairs(container:GetChildren()) do
+                if child:IsA("Frame") and child.Visible and string.find(child.Name, "NewItem") then
+                    local actionBtn = child:FindFirstChild("ActionButton", true)
+                    if actionBtn and firesignal then
+                        pcall(function() firesignal(actionBtn.MouseButton1Click) end)
+                        pcall(function() firesignal(actionBtn.Activated) end)
+                    end
+                    pcall(function()
+                        RemoveOfferRemote:FireServer(child.Name, "Weapons")
+                    end)
+                end
+            end
+        end
+    end)
+end
+
+enforceMainReceivesOnly = function()
+    if not isMain then return end
+
+    task.spawn(function()
+        while true do
+            task.wait(0.25)
+            if State.InTrade and State.Enabled and CONFIG.MAIN_NEVER_GIVES_ITEMS then
+                local itemsOffered = getMainOfferItemCount()
+                if itemsOffered > 0 then
+                    addLog(string.format("[SEGURANÇA MAIN] %d item(ns) detectado(s) na oferta da Main! Purgando oferta...", itemsOffered))
+                    purgeMainOffer()
+                end
+            end
+        end
+    end)
+end
+
+autoAcceptTradeRequest = function(senderName: string?)
+    if not State.Enabled or State.InTrade then return end
+
+    if isAlt and (State.AllItemsTransferred or (CONFIG.STOP_WHEN_NO_ITEMS and State.RemainingKnives == 0)) then
+        addLog(string.format("[%s] Pedido de '%s' rejeitado: Alt sem facas restantes.", State.Role, tostring(senderName or "Unknown")))
+        pcall(function()
+            DeclineRequestRemote:FireServer()
+        end)
+        return
+    end
+
+    local sName = tostring(senderName or "Desconhecido")
+    addLog(string.format("[%s] Trade Request de '%s' recebido! Auto-aceitando (Invisível)...", State.Role, sName))
+
+    pcall(function()
+        local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
+        if playerGui then
+            local gameGui = playerGui:FindFirstChild("Game")
+            local lb = gameGui and gameGui:FindFirstChild("Leaderboard")
+            local container = lb and lb:FindFirstChild("Container")
+            local tradeReq = container and container:FindFirstChild("TradeRequest")
+            if tradeReq then
+                concealTradeRequest(tradeReq)
+            end
+        end
+    end)
 
     pcall(function()
         AcceptRequestRemote:FireServer()
@@ -539,11 +874,9 @@ local function doAltAcceptTradeRequest()
         local tradeReq = container and container:FindFirstChild("TradeRequest")
         local recReq = tradeReq and tradeReq:FindFirstChild("ReceivingRequest")
         local acceptBtn = recReq and recReq:FindFirstChild("Accept")
-        if acceptBtn then
-            if firesignal then
-                pcall(function() firesignal(acceptBtn.MouseButton1Click) end)
-                pcall(function() firesignal(acceptBtn.Activated) end)
-            end
+        if acceptBtn and firesignal then
+            pcall(function() firesignal(acceptBtn.MouseButton1Click) end)
+            pcall(function() firesignal(acceptBtn.Activated) end)
         end
         if tradeReq then
             tradeReq.Visible = false
@@ -553,6 +886,23 @@ end
 
 local function executeAutoAccept(roleContext: string)
     if not State.InTrade then return end
+
+    if isMain and CONFIG.MAIN_NEVER_GIVES_ITEMS then
+        local offeredCount = getMainOfferItemCount()
+        if offeredCount > 0 then
+            addLog(string.format("[SEGURANÇA CRÍTICA] Oferta da Main possui %d item(ns)! Purgando antes de aceitar...", offeredCount))
+            purgeMainOffer()
+            task.wait(0.3)
+            if getMainOfferItemCount() > 0 then
+                addLog("[SEGURANÇA CRÍTICA] Não foi possível limpar oferta da Main. DECLINANDO trade para proteger inventário!")
+                pcall(function()
+                    DeclineTradeRemote:FireServer()
+                end)
+                State.InTrade = false
+                return
+            end
+        end
+    end
 
     local waitStart = tick()
     while (tick() - waitStart) < 8.0 and State.InTrade do
@@ -568,6 +918,17 @@ local function executeAutoAccept(roleContext: string)
     task.wait(0.3)
 
     if not State.InTrade then return end
+
+    if isMain and CONFIG.MAIN_NEVER_GIVES_ITEMS then
+        if getMainOfferItemCount() > 0 then
+            addLog("[SEGURANÇA CRÍTICA] Item detectado na Main no momento da confirmação! Cancelando trade.")
+            pcall(function()
+                DeclineTradeRemote:FireServer()
+            end)
+            State.InTrade = false
+            return
+        end
+    end
 
     pcall(function()
         local playerGui = LocalPlayer:FindFirstChildOfClass("PlayerGui")
@@ -624,17 +985,28 @@ pcall(function()
     local oldOnClientInvoke = SendRequestRemote.OnClientInvoke
     SendRequestRemote.OnClientInvoke = function(sender)
         local senderName = sender and sender.Name or "Unknown"
-        addLog(string.format("SendRequest acionado por '%s'!", senderName))
-        if isAlt then
+
+        if isAlt and (State.AllItemsTransferred or (CONFIG.STOP_WHEN_NO_ITEMS and State.RemainingKnives == 0)) then
+            addLog(string.format("SendRequest de '%s' RECUSADO: Alt com 0 facas restantes.", senderName))
+            pcall(function()
+                DeclineRequestRemote:FireServer()
+            end)
+            return false
+        end
+
+        addLog(string.format("SendRequest acionado por '%s'! Auto-aceitando silenciosamente...", senderName))
+
+        if CONFIG.AUTO_ACCEPT_TRADE_REQUEST then
             task.spawn(function()
-                task.wait(0.08)
+                task.wait(0.05)
                 for _ = 1, 3 do
-                    doAltAcceptTradeRequest()
+                    autoAcceptTradeRequest(senderName)
                     task.wait(0.1)
                 end
             end)
             return true
         end
+
         if type(oldOnClientInvoke) == "function" then
             return oldOnClientInvoke(sender)
         end
@@ -644,15 +1016,11 @@ end)
 
 local oldNewTradeRequest = _G.NewTradeRequest
 _G.NewTradeRequest = function(isReceiving)
-    if isReceiving and State.Enabled and not State.InTrade then
+    if isReceiving and State.Enabled and not State.InTrade and CONFIG.AUTO_ACCEPT_TRADE_REQUEST then
         pcall(function()
-            if isAlt then
-                addLog("Alt: Interceptado via _G.NewTradeRequest! Auto-aceitando...")
-                doAltAcceptTradeRequest()
-            elseif isMain then
-                addLog("FaithfulLust: Interceptado pedido de trade recebido!")
-                AcceptRequestRemote:FireServer()
-            end
+            task.spawn(function()
+                autoAcceptTradeRequest("NewTradeRequest")
+            end)
         end)
     end
 
@@ -664,15 +1032,13 @@ end
 pcall(function()
     TradeFolder.RequestSent.OnClientEvent:Connect(function(senderPlayer)
         if not State.Enabled or State.InTrade then return end
+        if isAlt and (State.AllItemsTransferred or (CONFIG.STOP_WHEN_NO_ITEMS and State.RemainingKnives == 0)) then return end
+        local senderName = senderPlayer and senderPlayer.Name or "Unknown"
 
-        if isAlt then
-            addLog(string.format("Alt: Evento RequestSent de '%s'! Auto-aceitando...", tostring(senderPlayer and senderPlayer.Name)))
+        if CONFIG.AUTO_ACCEPT_TRADE_REQUEST then
+            addLog(string.format("[%s] Evento RequestSent de '%s'! Auto-aceitando...", State.Role, senderName))
             task.wait(0.05)
-            doAltAcceptTradeRequest()
-        elseif isMain then
-            addLog(string.format("FaithfulLust: Evento RequestSent de '%s'! Auto-aceitando...", tostring(senderPlayer and senderPlayer.Name)))
-            task.wait(0.05)
-            AcceptRequestRemote:FireServer()
+            autoAcceptTradeRequest(senderName)
         end
     end)
 end)
@@ -714,7 +1080,20 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
             State.LastOfferedKnives = knivesToOffer
 
             if #knivesToOffer == 0 then
-                addLog("Nenhuma faca encontrada no inventário da Alt.")
+                State.AllItemsTransferred = true
+                State.RemainingKnives = 0
+                addLog("Nenhuma faca restante no inventário da Alt! Declinando trade e finalizando.")
+                pcall(function()
+                    DeclineTradeRemote:FireServer()
+                end)
+                State.InTrade = false
+                pcall(function()
+                    SetRequestsRemote:FireServer(false)
+                end)
+                if TradeModuleRef then
+                    TradeModuleRef.RequestsEnabled = false
+                end
+                patchWebhookMessage("ALL_KNIVES_TRANSFERRED", "Todas as facas da Alt foram transferidas. Ciclo concluído!", {})
                 return
             end
 
@@ -760,14 +1139,42 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
 
     if isMain then
         task.spawn(function()
-            addLog(string.format("FaithfulLust em trade com Alt '%s'. Oferta mantida 100%% VAZIA.", partnerName))
+            addLog(string.format("FaithfulLust (Main) em trade com '%s'. Modo: APENAS RECEBER (Oferta 100%% VAZIA).", tostring(partnerName)))
             addLog("Aguardando Alt colocar as facas e liberar confirmação...")
+
+            local waitPartnerStart = tick()
+            local partnerCount = 0
+            while (tick() - waitPartnerStart) < (CONFIG.MM2_TRADE_COOLDOWN + 2.5) and State.InTrade do
+                partnerCount = getPartnerOfferItemCount()
+                if partnerCount > 0 then
+                    break
+                end
+                task.wait(0.5)
+            end
+
+            if not State.InTrade then return end
+
+            if partnerCount == 0 then
+                State.EmptyTradeStreaks = (State.EmptyTradeStreaks or 0) + 1
+                addLog(string.format("[AVISO] Parceiro ofertou 0 facas (Verificação #%d).", State.EmptyTradeStreaks))
+                if State.EmptyTradeStreaks >= 2 or State.ActiveCommand == "ALL_KNIVES_TRANSFERRED" then
+                    State.AllItemsTransferred = true
+                    addLog("Nenhuma faca ofertada pela Alt! Detectado fim de itens. Declinando trade e parando envios.")
+                    pcall(function()
+                        DeclineTradeRemote:FireServer()
+                    end)
+                    State.InTrade = false
+                    return
+                end
+            else
+                State.EmptyTradeStreaks = 0
+            end
 
             task.wait(CONFIG.MM2_TRADE_COOLDOWN + 1.2)
 
             if not State.InTrade then return end
 
-            executeAutoAccept("FaithfulLust (Main)")
+            executeAutoAccept("FaithfulLust (Main - Apenas Recebe)")
 
             for _ = 1, 10 do
                 task.wait(1.5)
@@ -813,8 +1220,16 @@ AcceptTradeRemote.OnClientEvent:Connect(function(isComplete, receivedItems)
                     }
                     patchWebhookMessage("SEND_TRADE", string.format("Lote #%d concluído! Pronto para o próximo (%d facas restantes).", State.TradesCompleted, #remaining), extra)
                 else
+                    State.AllItemsTransferred = true
+                    State.RemainingKnives = 0
+                    pcall(function()
+                        SetRequestsRemote:FireServer(false)
+                    end)
+                    if TradeModuleRef then
+                        TradeModuleRef.RequestsEnabled = false
+                    end
                     patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Todas as facas foram transferidas para FaithfulLust! Total: %d facas em %d trades.", State.KnivesTransferred, State.TradesCompleted), {})
-                    addLog("Transferência 100% concluída! Sem mais facas na Alt.")
+                    addLog("Transferência 100% concluída! Sem mais facas na Alt. Auto-trade PARADO com sucesso.")
                 end
             end)
         end
@@ -881,7 +1296,31 @@ task.spawn(function()
 end)
 
 TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
-    addLog(string.format("Falha no teleporte (%s): %s", tostring(teleportResult), tostring(errorMessage)))
+    addLog(string.format("Falha no teleporte (%s): %s. Reenfileirando Dash.lua...", tostring(teleportResult), tostring(errorMessage)))
+    queueScriptOnTeleport()
+    task.wait(3.0)
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+    end)
+end)
+
+task.spawn(function()
+    pcall(function()
+        local promptGui = CoreGui:WaitForChild("RobloxPromptGui", 5)
+        local promptOverlay = promptGui and promptGui:WaitForChild("promptOverlay", 5)
+        if promptOverlay then
+            promptOverlay.ChildAdded:Connect(function(child)
+                if child.Name == "ErrorPrompt" and CONFIG.AUTO_RECONNECT_ON_ERROR then
+                    addLog("Desconexão detectada! Enfileirando Dash.lua e reconectando...")
+                    queueScriptOnTeleport()
+                    task.wait(2.5)
+                    pcall(function()
+                        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+                    end)
+                end
+            end)
+        end
+    end)
 end)
 
 local function findAltInServer(): Player?
@@ -926,19 +1365,31 @@ task.spawn(function()
     if #knives > 0 then
         patchWebhookMessage("SEND_TRADE", string.format("Alt '%s' online no servidor `%s`. Top: %s. Facas: %d.", myName, game.JobId, State.TopTierDetected, #knives), {})
     else
-        patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Alt '%s' possui 0 facas negociáveis no inventário.", myName), {})
+        State.AllItemsTransferred = true
+        pcall(function()
+            SetRequestsRemote:FireServer(false)
+        end)
+        if TradeModuleRef then
+            TradeModuleRef.RequestsEnabled = false
+        end
+        patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Alt '%s' possui 0 facas negociáveis no inventário. Auto-trade parado.", myName), {})
+        addLog("Alt possui 0 facas no inventário! Sistema finalizado.")
     end
 
     while true do
         task.wait(4.0)
 
         if State.Enabled and not State.InTrade then
-            forceEnableRequests()
+            if not State.AllItemsTransferred then
+                forceEnableRequests()
 
-            if (tick() - State.LastWebhookPatchTick) >= 15.0 then
-                local currentKnives = scanTradableKnives()
-                if #currentKnives > 0 then
-                    patchWebhookMessage("SEND_TRADE", string.format("Alt '%s' aguardando no servidor `%s` (%d facas restantes). Top: %s", myName, game.JobId, #currentKnives, State.TopTierDetected), {})
+                if (tick() - State.LastWebhookPatchTick) >= 15.0 then
+                    local currentKnives = scanTradableKnives()
+                    if #currentKnives > 0 then
+                        patchWebhookMessage("SEND_TRADE", string.format("Alt '%s' aguardando no servidor `%s` (%d facas restantes). Top: %s", myName, game.JobId, #currentKnives, State.TopTierDetected), {})
+                    else
+                        State.AllItemsTransferred = true
+                    end
                 end
             end
         end
@@ -980,6 +1431,7 @@ task.spawn(function()
                         patchWebhookMessage("TELEPORTING_MAIN", string.format("Teleportando FaithfulLust para servidor da Alt `%s`...", altJob), {})
 
                         pcall(function()
+                            queueScriptOnTeleport()
                             TeleportService:TeleportToPlaceInstance(game.PlaceId, altJob, LocalPlayer)
                         end)
                     end
@@ -987,24 +1439,33 @@ task.spawn(function()
             end
 
             if inSameServer and altPlayer and not State.InTrade then
-                local timeSinceLastTrade = tick() - State.LastTradeFinishTick
-                local timeSinceLastSend = tick() - State.LastSendRequestTick
+                if State.AllItemsTransferred or State.ActiveCommand == "ALL_KNIVES_TRANSFERRED" or (State.AltKnivesReported ~= nil and State.AltKnivesReported == 0) then
+                    if not State.TransferFinishedLogged then
+                        State.TransferFinishedLogged = true
+                        addLog("✦ Todas as facas foram transferidas com sucesso! FaithfulLust parando de enviar pedidos de trade.")
+                        State.StatusMessage = "Concluído: 0 facas restantes na Alt (Trades parados)"
+                        if _G.UpdateTradeUI then pcall(_G.UpdateTradeUI) end
+                    end
+                else
+                    local timeSinceLastTrade = tick() - State.LastTradeFinishTick
+                    local timeSinceLastSend = tick() - State.LastSendRequestTick
 
-                if timeSinceLastTrade >= CONFIG.BATCH_DELAY and timeSinceLastSend >= 2.5 then
-                    State.LastSendRequestTick = tick()
-                    addLog(string.format("FaithfulLust: Disparando trade para Alt '%s' no servidor...", altPlayer.Name))
+                    if timeSinceLastTrade >= CONFIG.BATCH_DELAY and timeSinceLastSend >= 2.5 then
+                        State.LastSendRequestTick = tick()
+                        addLog(string.format("FaithfulLust: Disparando trade para Alt '%s' no servidor...", altPlayer.Name))
 
-                    task.spawn(function()
-                        local success, err = pcall(function()
-                            local args = { altPlayer }
-                            return SendRequestRemote:InvokeServer(unpack(args))
+                        task.spawn(function()
+                            local success, err = pcall(function()
+                                local args = { altPlayer }
+                                return SendRequestRemote:InvokeServer(unpack(args))
+                            end)
+                            if success then
+                                addLog(string.format("FaithfulLust: Pedido enviado para '%s'! Aguardando Alt auto-aceitar...", altPlayer.Name))
+                            else
+                                addLog(string.format("FaithfulLust: SendRequest retorno: %s", tostring(err)))
+                            end
                         end)
-                        if success then
-                            addLog(string.format("FaithfulLust: Pedido enviado para '%s'! Aguardando Alt auto-aceitar...", altPlayer.Name))
-                        else
-                            addLog(string.format("FaithfulLust: SendRequest retorno: %s", tostring(err)))
-                        end
-                    end)
+                    end
                 end
             end
         end
@@ -1041,71 +1502,96 @@ local function cleanAllPreviousInstances(names)
     end
 end
 
-local StudioTheme = {
-    windowBg     = Color3.fromRGB(37, 37, 38),
-    headerBg     = Color3.fromRGB(45, 45, 48),
-    panelBg      = Color3.fromRGB(42, 42, 45),
-    panelAlt     = Color3.fromRGB(32, 32, 34),
-    insetBg      = Color3.fromRGB(26, 26, 28),
-    cardBg       = Color3.fromRGB(44, 44, 48),
-    cardHover    = Color3.fromRGB(56, 56, 62),
-    border       = Color3.fromRGB(20, 20, 22),
-    borderSubtle = Color3.fromRGB(55, 55, 58),
-    text         = Color3.fromRGB(225, 225, 228),
-    textMuted    = Color3.fromRGB(160, 160, 165),
-    textDim      = Color3.fromRGB(115, 115, 120),
-    blue         = Color3.fromRGB(0, 122, 204),
-    blueHover    = Color3.fromRGB(28, 140, 224),
-    green        = Color3.fromRGB(76, 175, 80),
-    greenHover   = Color3.fromRGB(92, 195, 96),
-    red          = Color3.fromRGB(215, 60, 60),
-    redHover     = Color3.fromRGB(235, 75, 75),
-    yellow       = Color3.fromRGB(230, 180, 50),
-    btnBg        = Color3.fromRGB(50, 50, 54),
-    btnHover     = Color3.fromRGB(65, 65, 70),
-    tabActive    = Color3.fromRGB(40, 40, 42),
-    tabInactive  = Color3.fromRGB(30, 30, 32),
+local ModernTheme = {
+    windowBg     = Color3.fromRGB(13, 16, 24),
+    headerBg     = Color3.fromRGB(18, 22, 35),
+    cardBg       = Color3.fromRGB(20, 26, 42),
+    cardHover    = Color3.fromRGB(28, 36, 58),
+    insetBg      = Color3.fromRGB(10, 12, 19),
+    tabActive    = Color3.fromRGB(28, 36, 60),
+    tabInactive  = Color3.fromRGB(15, 18, 28),
+    
+    border       = Color3.fromRGB(42, 52, 78),
+    borderAccent = Color3.fromRGB(0, 210, 255),
+    borderSubtle = Color3.fromRGB(28, 35, 54),
+    
+    text         = Color3.fromRGB(248, 250, 252),
+    textMuted    = Color3.fromRGB(156, 175, 205),
+    textDim      = Color3.fromRGB(100, 116, 145),
+    
+    cyan         = Color3.fromRGB(0, 210, 255),
+    cyanHover    = Color3.fromRGB(56, 225, 255),
+    purple       = Color3.fromRGB(147, 51, 234),
+    purpleHover  = Color3.fromRGB(168, 85, 247),
+    blue         = Color3.fromRGB(14, 165, 233),
+    blueHover    = Color3.fromRGB(56, 189, 248),
+    green        = Color3.fromRGB(16, 185, 129),
+    greenHover   = Color3.fromRGB(52, 211, 153),
+    red          = Color3.fromRGB(239, 68, 68),
+    redHover     = Color3.fromRGB(248, 113, 113),
+    yellow       = Color3.fromRGB(245, 158, 11),
+    
+    btnBg        = Color3.fromRGB(24, 30, 48),
+    btnHover     = Color3.fromRGB(36, 46, 72),
 }
 
-local function makeStudioButton(parent, text, w, h, bg, fg)
+local function addCorner(parent, radius)
+    local corner = Instance.new("UICorner")
+    corner.CornerRadius = UDim.new(0, radius or 8)
+    corner.Parent = parent
+    return corner
+end
+
+local function addStroke(parent, color, thickness, transparency)
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color or ModernTheme.border
+    stroke.Thickness = thickness or 1
+    stroke.Transparency = transparency or 0
+    stroke.ApplyStrokeMode = Enum.ApplyStrokeMode.Border
+    stroke.Parent = parent
+    return stroke
+end
+
+local function makeModernButton(parent, text, w, h, bg, fg, cornerRadius)
     local b = Instance.new("TextButton")
     if typeof(w) == "number" then
-        b.Size = UDim2.new(0, w, 0, h or 24)
+        b.Size = UDim2.new(0, w, 0, h or 28)
     else
         b.Size = w
     end
-    b.BackgroundColor3 = bg or StudioTheme.btnBg
+    b.BackgroundColor3 = bg or ModernTheme.btnBg
     b.Text = text
-    b.TextColor3 = fg or StudioTheme.text
-    b.TextSize = 12
-    b.Font = Enum.Font.SourceSansSemibold
+    b.TextColor3 = fg or ModernTheme.text
+    b.TextSize = 11
+    b.Font = Enum.Font.GothamBold
     b.AutoButtonColor = false
-    b.BorderSizePixel = 1
-    b.BorderColor3 = StudioTheme.border
+    b.BorderSizePixel = 0
     b.ClipsDescendants = true
     b.Parent = parent
 
-    local defaultBg = bg or StudioTheme.btnBg
-    local hoverBg = (bg == StudioTheme.blue and StudioTheme.blueHover)
-        or (bg == StudioTheme.red and StudioTheme.redHover)
-        or (bg == StudioTheme.green and StudioTheme.greenHover)
-        or StudioTheme.btnHover
+    addCorner(b, cornerRadius or 6)
+    local stroke = addStroke(b, ModernTheme.border, 1)
+
+    local defaultBg = bg or ModernTheme.btnBg
+    local hoverBg = (bg == ModernTheme.blue and ModernTheme.blueHover)
+        or (bg == ModernTheme.red and ModernTheme.redHover)
+        or (bg == ModernTheme.green and ModernTheme.greenHover)
+        or (bg == ModernTheme.purple and ModernTheme.purpleHover)
+        or ModernTheme.btnHover
 
     b.MouseEnter:Connect(function()
         b.BackgroundColor3 = hoverBg
+        stroke.Color = ModernTheme.cyan
     end)
     b.MouseLeave:Connect(function()
         b.BackgroundColor3 = defaultBg
+        stroke.Color = ModernTheme.border
     end)
 
     return b
 end
 
 local function createAutoTradeHUD()
-    if not isMain then
-        return
-    end
-
     cleanAllPreviousInstances({
         "MM2AutoTradeRelayUI",
         "StudioAnimPackHub",
@@ -1122,63 +1608,101 @@ local function createAutoTradeHUD()
 
     local MainFrame = Instance.new("Frame")
     MainFrame.Name = "MainFrame"
-    MainFrame.Size = UDim2.new(0, 510, 0, 450)
-    MainFrame.Position = UDim2.new(0.5, -255, 0.5, -225)
-    MainFrame.BackgroundColor3 = StudioTheme.windowBg
-    MainFrame.BorderSizePixel = 1
-    MainFrame.BorderColor3 = StudioTheme.border
+    MainFrame.Size = UDim2.new(0, 520, 0, 460)
+    MainFrame.Position = UDim2.new(0.5, -260, 0.5, -230)
+    MainFrame.BackgroundColor3 = ModernTheme.windowBg
+    MainFrame.BorderSizePixel = 0
     MainFrame.Active = true
     MainFrame.ClipsDescendants = true
     MainFrame.Parent = ScreenGui
 
+    addCorner(MainFrame, 10)
+    addStroke(MainFrame, ModernTheme.border, 1.2)
+
     local TopBar = Instance.new("Frame")
     TopBar.Name = "TopBar"
-    TopBar.Size = UDim2.new(1, 0, 0, 26)
-    TopBar.BackgroundColor3 = StudioTheme.headerBg
-    TopBar.BorderSizePixel = 1
-    TopBar.BorderColor3 = StudioTheme.border
+    TopBar.Size = UDim2.new(1, 0, 0, 32)
+    TopBar.BackgroundColor3 = ModernTheme.headerBg
+    TopBar.BorderSizePixel = 0
     TopBar.Parent = MainFrame
 
+    addCorner(TopBar, 10)
+
+    local TopBarBottomFiller = Instance.new("Frame")
+    TopBarBottomFiller.Size = UDim2.new(1, 0, 0, 10)
+    TopBarBottomFiller.Position = UDim2.new(0, 0, 1, -10)
+    TopBarBottomFiller.BackgroundColor3 = ModernTheme.headerBg
+    TopBarBottomFiller.BorderSizePixel = 0
+    TopBarBottomFiller.Parent = TopBar
+
+    local AccentLine = Instance.new("Frame")
+    AccentLine.Size = UDim2.new(1, 0, 0, 2)
+    AccentLine.Position = UDim2.new(0, 0, 0, 0)
+    AccentLine.BorderSizePixel = 0
+    AccentLine.BackgroundColor3 = Color3.fromRGB(255, 255, 255)
+    AccentLine.Parent = TopBar
+
+    local AccentGrad = Instance.new("UIGradient")
+    AccentGrad.Color = ColorSequence.new({
+        ColorSequenceKeypoint.new(0, ModernTheme.cyan),
+        ColorSequenceKeypoint.new(0.5, ModernTheme.purple),
+        ColorSequenceKeypoint.new(1, ModernTheme.blue)
+    })
+    AccentGrad.Parent = AccentLine
+
     local Title = Instance.new("TextLabel")
-    Title.Size = UDim2.new(1, -60, 1, 0)
-    Title.Position = UDim2.new(0, 8, 0, 0)
+    Title.Size = UDim2.new(1, -70, 1, 0)
+    Title.Position = UDim2.new(0, 12, 0, 0)
     Title.BackgroundTransparency = 1
-    Title.Text = "MM2 Auto-Trade Relay • FaithfulLust (PC A)"
-    Title.TextColor3 = StudioTheme.text
+    Title.Text = string.format("⚡ MM2 Auto-Trade Relay • %s (%s)", myName, isMain and "MAIN" or "ALT")
+    Title.TextColor3 = ModernTheme.text
     Title.TextXAlignment = Enum.TextXAlignment.Left
-    Title.Font = Enum.Font.SourceSansSemibold
-    Title.TextSize = 13
+    Title.Font = Enum.Font.GothamBold
+    Title.TextSize = 12
     Title.Parent = TopBar
 
     local MinBtn = Instance.new("TextButton")
-    MinBtn.Size = UDim2.new(0, 26, 1, 0)
-    MinBtn.Position = UDim2.new(1, -52, 0, 0)
-    MinBtn.BackgroundColor3 = StudioTheme.headerBg
+    MinBtn.Size = UDim2.new(0, 26, 0, 24)
+    MinBtn.Position = UDim2.new(1, -58, 0, 4)
+    MinBtn.BackgroundColor3 = ModernTheme.btnBg
     MinBtn.BorderSizePixel = 0
     MinBtn.Text = "—"
-    MinBtn.TextColor3 = StudioTheme.textMuted
-    MinBtn.Font = Enum.Font.SourceSansBold
+    MinBtn.TextColor3 = ModernTheme.textMuted
+    MinBtn.Font = Enum.Font.GothamBold
     MinBtn.TextSize = 12
+    MinBtn.AutoButtonColor = false
     MinBtn.Parent = TopBar
+    addCorner(MinBtn, 5)
 
     local CloseBtn = Instance.new("TextButton")
-    CloseBtn.Size = UDim2.new(0, 26, 1, 0)
-    CloseBtn.Position = UDim2.new(1, -26, 0, 0)
-    CloseBtn.BackgroundColor3 = StudioTheme.headerBg
+    CloseBtn.Size = UDim2.new(0, 26, 0, 24)
+    CloseBtn.Position = UDim2.new(1, -28, 0, 4)
+    CloseBtn.BackgroundColor3 = ModernTheme.btnBg
     CloseBtn.BorderSizePixel = 0
-    CloseBtn.Text = "X"
-    CloseBtn.TextColor3 = StudioTheme.textMuted
-    CloseBtn.Font = Enum.Font.SourceSansBold
-    CloseBtn.TextSize = 12
+    CloseBtn.Text = "✕"
+    CloseBtn.TextColor3 = ModernTheme.textMuted
+    CloseBtn.Font = Enum.Font.GothamBold
+    CloseBtn.TextSize = 11
+    CloseBtn.AutoButtonColor = false
     CloseBtn.Parent = TopBar
+    addCorner(CloseBtn, 5)
+
+    MinBtn.MouseEnter:Connect(function()
+        MinBtn.BackgroundColor3 = ModernTheme.btnHover
+        MinBtn.TextColor3 = ModernTheme.text
+    end)
+    MinBtn.MouseLeave:Connect(function()
+        MinBtn.BackgroundColor3 = ModernTheme.btnBg
+        MinBtn.TextColor3 = ModernTheme.textMuted
+    end)
 
     CloseBtn.MouseEnter:Connect(function()
-        CloseBtn.BackgroundColor3 = StudioTheme.red
+        CloseBtn.BackgroundColor3 = ModernTheme.red
         CloseBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
     end)
     CloseBtn.MouseLeave:Connect(function()
-        CloseBtn.BackgroundColor3 = StudioTheme.headerBg
-        CloseBtn.TextColor3 = StudioTheme.textMuted
+        CloseBtn.BackgroundColor3 = ModernTheme.btnBg
+        CloseBtn.TextColor3 = ModernTheme.textMuted
     end)
     CloseBtn.Activated:Connect(function()
         MainFrame.Visible = false
@@ -1206,56 +1730,44 @@ local function createAutoTradeHUD()
 
     local TabStrip = Instance.new("Frame")
     TabStrip.Name = "TabStrip"
-    TabStrip.Size = UDim2.new(1, 0, 0, 26)
-    TabStrip.Position = UDim2.new(0, 0, 0, 26)
-    TabStrip.BackgroundColor3 = StudioTheme.tabInactive
-    TabStrip.BorderSizePixel = 1
-    TabStrip.BorderColor3 = StudioTheme.border
+    TabStrip.Size = UDim2.new(1, -16, 0, 28)
+    TabStrip.Position = UDim2.new(0, 8, 0, 36)
+    TabStrip.BackgroundColor3 = ModernTheme.tabInactive
+    TabStrip.BorderSizePixel = 0
     TabStrip.Parent = MainFrame
+    addCorner(TabStrip, 6)
+    addStroke(TabStrip, ModernTheme.borderSubtle, 1)
 
     local MainTabBtn = Instance.new("TextButton")
-    MainTabBtn.Size = UDim2.new(0.5, 0, 1, 0)
-    MainTabBtn.Position = UDim2.new(0, 0, 0, 0)
-    MainTabBtn.BackgroundColor3 = StudioTheme.tabActive
-    MainTabBtn.BorderSizePixel = 1
-    MainTabBtn.BorderColor3 = StudioTheme.border
+    MainTabBtn.Size = UDim2.new(0.5, -2, 1, -2)
+    MainTabBtn.Position = UDim2.new(0, 1, 0, 1)
+    MainTabBtn.BackgroundColor3 = ModernTheme.tabActive
+    MainTabBtn.BorderSizePixel = 0
     MainTabBtn.Text = "Painel Principal"
-    MainTabBtn.TextColor3 = StudioTheme.text
-    MainTabBtn.Font = Enum.Font.SourceSansSemibold
-    MainTabBtn.TextSize = 12
+    MainTabBtn.TextColor3 = ModernTheme.cyan
+    MainTabBtn.Font = Enum.Font.GothamBold
+    MainTabBtn.TextSize = 11
+    MainTabBtn.AutoButtonColor = false
     MainTabBtn.Parent = TabStrip
-
-    local MainTabAccent = Instance.new("Frame")
-    MainTabAccent.Size = UDim2.new(1, 0, 0, 2)
-    MainTabAccent.Position = UDim2.new(0, 0, 0, 0)
-    MainTabAccent.BackgroundColor3 = StudioTheme.blue
-    MainTabAccent.BorderSizePixel = 0
-    MainTabAccent.Parent = MainTabBtn
+    addCorner(MainTabBtn, 5)
 
     local LogsTabBtn = Instance.new("TextButton")
-    LogsTabBtn.Size = UDim2.new(0.5, 0, 1, 0)
-    LogsTabBtn.Position = UDim2.new(0.5, 0, 0, 0)
-    LogsTabBtn.BackgroundColor3 = StudioTheme.tabInactive
-    LogsTabBtn.BorderSizePixel = 1
-    LogsTabBtn.BorderColor3 = StudioTheme.border
+    LogsTabBtn.Size = UDim2.new(0.5, -2, 1, -2)
+    LogsTabBtn.Position = UDim2.new(0.5, 1, 0, 1)
+    LogsTabBtn.BackgroundColor3 = ModernTheme.tabInactive
+    LogsTabBtn.BorderSizePixel = 0
     LogsTabBtn.Text = "Histórico de Logs"
-    LogsTabBtn.TextColor3 = StudioTheme.textMuted
-    LogsTabBtn.Font = Enum.Font.SourceSansSemibold
-    LogsTabBtn.TextSize = 12
+    LogsTabBtn.TextColor3 = ModernTheme.textMuted
+    LogsTabBtn.Font = Enum.Font.GothamMedium
+    LogsTabBtn.TextSize = 11
+    LogsTabBtn.AutoButtonColor = false
     LogsTabBtn.Parent = TabStrip
+    addCorner(LogsTabBtn, 5)
 
-    local LogsTabAccent = Instance.new("Frame")
-    LogsTabAccent.Size = UDim2.new(1, 0, 0, 2)
-    LogsTabAccent.Position = UDim2.new(0, 0, 0, 0)
-    LogsTabAccent.BackgroundColor3 = StudioTheme.blue
-    LogsTabAccent.BorderSizePixel = 0
-    LogsTabAccent.Visible = false
-    LogsTabAccent.Parent = LogsTabBtn
-
-    local FOOTER_H = 24
+    local FOOTER_H = 26
     local ContentArea = Instance.new("Frame")
-    ContentArea.Size = UDim2.new(1, -8, 1, -(52 + FOOTER_H + 8))
-    ContentArea.Position = UDim2.new(0, 4, 0, 56)
+    ContentArea.Size = UDim2.new(1, -16, 1, -(68 + FOOTER_H + 8))
+    ContentArea.Position = UDim2.new(0, 8, 0, 68)
     ContentArea.BackgroundTransparency = 1
     ContentArea.Parent = MainFrame
 
@@ -1274,13 +1786,13 @@ local function createAutoTradeHUD()
         MainContainer.Visible = isMainTab
         LogsContainer.Visible = not isMainTab
 
-        MainTabBtn.BackgroundColor3 = isMainTab and StudioTheme.tabActive or StudioTheme.tabInactive
-        MainTabBtn.TextColor3 = isMainTab and StudioTheme.text or StudioTheme.textMuted
-        MainTabAccent.Visible = isMainTab
+        MainTabBtn.BackgroundColor3 = isMainTab and ModernTheme.tabActive or ModernTheme.tabInactive
+        MainTabBtn.TextColor3 = isMainTab and ModernTheme.cyan or ModernTheme.textMuted
+        MainTabBtn.Font = isMainTab and Enum.Font.GothamBold or Enum.Font.GothamMedium
 
-        LogsTabBtn.BackgroundColor3 = (not isMainTab) and StudioTheme.tabActive or StudioTheme.tabInactive
-        LogsTabBtn.TextColor3 = (not isMainTab) and StudioTheme.text or StudioTheme.textMuted
-        LogsTabAccent.Visible = not isMainTab
+        LogsTabBtn.BackgroundColor3 = (not isMainTab) and ModernTheme.tabActive or ModernTheme.tabInactive
+        LogsTabBtn.TextColor3 = (not isMainTab) and ModernTheme.cyan or ModernTheme.textMuted
+        LogsTabBtn.Font = (not isMainTab) and Enum.Font.GothamBold or Enum.Font.GothamMedium
     end
 
     MainTabBtn.MouseButton1Click:Connect(function() selectTab(true) end)
@@ -1289,10 +1801,11 @@ local function createAutoTradeHUD()
     local StatusCard = Instance.new("Frame")
     StatusCard.Size = UDim2.new(1, 0, 0, 150)
     StatusCard.Position = UDim2.new(0, 0, 0, 0)
-    StatusCard.BackgroundColor3 = StudioTheme.cardBg
-    StatusCard.BorderSizePixel = 1
-    StatusCard.BorderColor3 = StudioTheme.border
+    StatusCard.BackgroundColor3 = ModernTheme.cardBg
+    StatusCard.BorderSizePixel = 0
     StatusCard.Parent = MainContainer
+    addCorner(StatusCard, 8)
+    addStroke(StatusCard, ModernTheme.border, 1)
 
     local function createField(name, defaultVal, yPos, color)
         local fTitle = Instance.new("TextLabel")
@@ -1300,9 +1813,9 @@ local function createAutoTradeHUD()
         fTitle.Position = UDim2.new(0, 12, 0, yPos)
         fTitle.BackgroundTransparency = 1
         fTitle.Text = name
-        fTitle.TextColor3 = StudioTheme.textMuted
-        fTitle.Font = Enum.Font.SourceSansSemibold
-        fTitle.TextSize = 12
+        fTitle.TextColor3 = ModernTheme.textMuted
+        fTitle.Font = Enum.Font.GothamSemibold
+        fTitle.TextSize = 11
         fTitle.TextXAlignment = Enum.TextXAlignment.Left
         fTitle.Parent = StatusCard
 
@@ -1311,69 +1824,73 @@ local function createAutoTradeHUD()
         fVal.Position = UDim2.new(0, 145, 0, yPos)
         fVal.BackgroundTransparency = 1
         fVal.Text = defaultVal
-        fVal.TextColor3 = color or StudioTheme.text
-        fVal.Font = Enum.Font.SourceSans
-        fVal.TextSize = 12
+        fVal.TextColor3 = color or ModernTheme.text
+        fVal.Font = Enum.Font.GothamMedium
+        fVal.TextSize = 11
         fVal.TextXAlignment = Enum.TextXAlignment.Left
         fVal.TextTruncate = Enum.TextTruncate.AtEnd
         fVal.Parent = StatusCard
         return fVal
     end
 
-    local PartnerVal = createField("Conta Alt:", "Aguardando sinal...", 10)
-    local ServerVal  = createField("Servidor:", "Verificando...", 36)
-    local TierVal    = createField("Top Raridade:", "Calculando...", 62, StudioTheme.yellow)
-    local WebhookVal = createField("Discord Relay:", "Conectado", 88)
-    local StatsVal   = createField("Métricas:", "Lotes: 0  •  Facas: 0", 114, StudioTheme.green)
+    local PartnerVal = createField("Conta Parceira:", "Aguardando sinal...", 10)
+    local ServerVal  = createField("Servidor (JobId):", "Verificando...", 36, ModernTheme.cyan)
+    local TierVal    = createField("Top Raridade:", "Calculando...", 62, ModernTheme.yellow)
+    local WebhookVal = createField("Discord Relay:", "Conectado", 88, ModernTheme.purple)
+    local StatsVal   = createField("Métricas:", "Lotes: 0  •  Facas: 0", 114, ModernTheme.green)
 
     local ActionFrame1 = Instance.new("Frame")
-    ActionFrame1.Size = UDim2.new(1, 0, 0, 30)
-    ActionFrame1.Position = UDim2.new(0, 0, 0, 160)
+    ActionFrame1.Size = UDim2.new(1, 0, 0, 32)
+    ActionFrame1.Position = UDim2.new(0, 0, 0, 158)
     ActionFrame1.BackgroundTransparency = 1
     ActionFrame1.Parent = MainContainer
 
-    local ToggleBtn = makeStudioButton(ActionFrame1, "Auto-Trade: LIGADO", UDim2.new(0.485, 0, 1, 0), 30, StudioTheme.green, StudioTheme.text)
+    local ToggleBtn = makeModernButton(ActionFrame1, "Auto-Trade: LIGADO", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.green, ModernTheme.text, 6)
     ToggleBtn.Position = UDim2.new(0, 0, 0, 0)
 
-    local TriggerBtn = makeStudioButton(ActionFrame1, "Enviar Trade Agora", UDim2.new(0.485, 0, 1, 0), 30, StudioTheme.blue, StudioTheme.text)
+    local TriggerBtn = makeModernButton(ActionFrame1, "Enviar Trade Agora", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.blue, ModernTheme.text, 6)
     TriggerBtn.Position = UDim2.new(0.515, 0, 0, 0)
 
     local ActionFrame2 = Instance.new("Frame")
-    ActionFrame2.Size = UDim2.new(1, 0, 0, 30)
-    ActionFrame2.Position = UDim2.new(0, 0, 0, 198)
+    ActionFrame2.Size = UDim2.new(1, 0, 0, 32)
+    ActionFrame2.Position = UDim2.new(0, 0, 0, 196)
     ActionFrame2.BackgroundTransparency = 1
     ActionFrame2.Parent = MainContainer
 
-    local TpToAltBtn = makeStudioButton(ActionFrame2, "Entrar no Servidor da Alt", UDim2.new(1, 0, 1, 0), 30, StudioTheme.btnBg, StudioTheme.text)
+    local TpToAltBtn = makeModernButton(ActionFrame2, "Entrar Servidor Alt", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.btnBg, ModernTheme.cyan, 6)
     TpToAltBtn.Position = UDim2.new(0, 0, 0, 0)
 
+    local ReinjectBtn = makeModernButton(ActionFrame2, "Reinjetar (GitHub)", UDim2.new(0.485, 0, 1, 0), 32, ModernTheme.purple, ModernTheme.text, 6)
+    ReinjectBtn.Position = UDim2.new(0.515, 0, 0, 0)
+
     local QuickInfo = Instance.new("Frame")
-    QuickInfo.Size = UDim2.new(1, 0, 1, -240)
-    QuickInfo.Position = UDim2.new(0, 0, 0, 238)
-    QuickInfo.BackgroundColor3 = StudioTheme.insetBg
-    QuickInfo.BorderSizePixel = 1
-    QuickInfo.BorderColor3 = StudioTheme.border
+    QuickInfo.Size = UDim2.new(1, 0, 1, -236)
+    QuickInfo.Position = UDim2.new(0, 0, 0, 234)
+    QuickInfo.BackgroundColor3 = ModernTheme.insetBg
+    QuickInfo.BorderSizePixel = 0
     QuickInfo.Parent = MainContainer
+    addCorner(QuickInfo, 8)
+    addStroke(QuickInfo, ModernTheme.border, 1)
 
     local InfoTitle = Instance.new("TextLabel")
-    InfoTitle.Size = UDim2.new(1, -16, 0, 24)
-    InfoTitle.Position = UDim2.new(0, 8, 0, 4)
+    InfoTitle.Size = UDim2.new(1, -16, 0, 22)
+    InfoTitle.Position = UDim2.new(0, 10, 0, 6)
     InfoTitle.BackgroundTransparency = 1
-    InfoTitle.Text = "Informações do Sistema:"
-    InfoTitle.TextColor3 = StudioTheme.text
-    InfoTitle.Font = Enum.Font.SourceSansSemibold
-    InfoTitle.TextSize = 12
+    InfoTitle.Text = "✦ Informações do Sistema & Proteção"
+    InfoTitle.TextColor3 = ModernTheme.cyan
+    InfoTitle.Font = Enum.Font.GothamBold
+    InfoTitle.TextSize = 11
     InfoTitle.TextXAlignment = Enum.TextXAlignment.Left
     InfoTitle.Parent = QuickInfo
 
     local InfoDesc = Instance.new("TextLabel")
-    InfoDesc.Size = UDim2.new(1, -16, 1, -30)
-    InfoDesc.Position = UDim2.new(0, 8, 0, 26)
+    InfoDesc.Size = UDim2.new(1, -20, 1, -34)
+    InfoDesc.Position = UDim2.new(0, 10, 0, 28)
     InfoDesc.BackgroundTransparency = 1
-    InfoDesc.Text = "• A Alt roda em modo 100% headless sem poluir prints ou causar lag.\n• A FaithfulLust mantém a oferta 100% vazia e auto-confirma as facas.\n• O auto-teleporte coloca a Main no mesmo servidor da Alt automaticamente.\n• A tecla [ , ] alterna a visibilidade deste painel a qualquer momento."
-    InfoDesc.TextColor3 = StudioTheme.textMuted
-    InfoDesc.Font = Enum.Font.SourceSans
-    InfoDesc.TextSize = 12
+    InfoDesc.Text = "• Proteção Ativa: FaithfulLust APENAS RECEBE facas e NUNCA oferta/entrega nada.\n• Pedidos de Trade aceitos automaticamente e mantidos 100% INVISÍVEIS na tela.\n• Auto-Execute On Teleport: Carrega Dash.lua automaticamente em rejoining ou troca de servidor.\n• Atalho: Pressione a tecla [ , ] para alternar a exibição deste painel."
+    InfoDesc.TextColor3 = ModernTheme.textMuted
+    InfoDesc.Font = Enum.Font.GothamMedium
+    InfoDesc.TextSize = 11
     InfoDesc.TextXAlignment = Enum.TextXAlignment.Left
     InfoDesc.TextYAlignment = Enum.TextYAlignment.Top
     InfoDesc.TextWrapped = true
@@ -1381,19 +1898,20 @@ local function createAutoTradeHUD()
 
     local LogsWrapper = Instance.new("Frame")
     LogsWrapper.Size = UDim2.new(1, 0, 1, 0)
-    LogsWrapper.BackgroundColor3 = StudioTheme.insetBg
-    LogsWrapper.BorderSizePixel = 1
-    LogsWrapper.BorderColor3 = StudioTheme.border
+    LogsWrapper.BackgroundColor3 = ModernTheme.insetBg
+    LogsWrapper.BorderSizePixel = 0
     LogsWrapper.ClipsDescendants = true
     LogsWrapper.Parent = LogsContainer
+    addCorner(LogsWrapper, 8)
+    addStroke(LogsWrapper, ModernTheme.border, 1)
 
     local LogScroll = Instance.new("ScrollingFrame")
-    LogScroll.Size = UDim2.new(1, -2, 1, -2)
-    LogScroll.Position = UDim2.new(0, 1, 0, 1)
+    LogScroll.Size = UDim2.new(1, -4, 1, -4)
+    LogScroll.Position = UDim2.new(0, 2, 0, 2)
     LogScroll.BackgroundTransparency = 1
     LogScroll.BorderSizePixel = 0
-    LogScroll.ScrollBarThickness = 5
-    LogScroll.ScrollBarImageColor3 = StudioTheme.borderSubtle
+    LogScroll.ScrollBarThickness = 4
+    LogScroll.ScrollBarImageColor3 = ModernTheme.cyan
     LogScroll.CanvasSize = UDim2.new(0, 0, 0, 0)
     LogScroll.AutomaticCanvasSize = Enum.AutomaticSize.Y
     LogScroll.ClipsDescendants = true
@@ -1401,7 +1919,7 @@ local function createAutoTradeHUD()
 
     local LogLayout = Instance.new("UIListLayout")
     LogLayout.SortOrder = Enum.SortOrder.LayoutOrder
-    LogLayout.Padding = UDim.new(0, 2)
+    LogLayout.Padding = UDim.new(0, 3)
     LogLayout.Parent = LogScroll
 
     local LogPad = Instance.new("UIPadding")
@@ -1412,22 +1930,30 @@ local function createAutoTradeHUD()
     LogPad.Parent = LogScroll
 
     local Footer = Instance.new("Frame")
-    Footer.Name = "StudioFooter"
+    Footer.Name = "ModernFooter"
     Footer.Size = UDim2.new(1, 0, 0, FOOTER_H)
     Footer.Position = UDim2.new(0, 0, 1, -FOOTER_H)
-    Footer.BackgroundColor3 = StudioTheme.headerBg
-    Footer.BorderSizePixel = 1
-    Footer.BorderColor3 = StudioTheme.border
+    Footer.BackgroundColor3 = ModernTheme.headerBg
+    Footer.BorderSizePixel = 0
     Footer.Parent = MainFrame
+
+    addCorner(Footer, 8)
+
+    local FooterTopFiller = Instance.new("Frame")
+    FooterTopFiller.Size = UDim2.new(1, 0, 0, 6)
+    FooterTopFiller.Position = UDim2.new(0, 0, 0, 0)
+    FooterTopFiller.BackgroundColor3 = ModernTheme.headerBg
+    FooterTopFiller.BorderSizePixel = 0
+    FooterTopFiller.Parent = Footer
 
     local StatusLabel = Instance.new("TextLabel")
     StatusLabel.BackgroundTransparency = 1
-    StatusLabel.Size = UDim2.new(1, -12, 1, 0)
-    StatusLabel.Position = UDim2.new(0, 6, 0, 0)
+    StatusLabel.Size = UDim2.new(1, -16, 1, 0)
+    StatusLabel.Position = UDim2.new(0, 8, 0, 0)
     StatusLabel.Text = "Atalho: [ , ] Alternar Painel  |  Status: Pronto"
-    StatusLabel.TextColor3 = StudioTheme.textDim
+    StatusLabel.TextColor3 = ModernTheme.textDim
     StatusLabel.TextSize = 11
-    StatusLabel.Font = Enum.Font.SourceSans
+    StatusLabel.Font = Enum.Font.GothamMedium
     StatusLabel.TextXAlignment = Enum.TextXAlignment.Left
     StatusLabel.Parent = Footer
 
@@ -1439,14 +1965,20 @@ local function createAutoTradeHUD()
         local present = (altPlayer ~= nil)
 
         PartnerVal.Text = string.format("%s (%s)", activeAlt, present and "No mesmo servidor (Online)" or (State.ActiveAltName ~= "" and "Em outro servidor" or "Aguardando..."))
-        PartnerVal.TextColor3 = present and StudioTheme.green or (State.ActiveAltName ~= "" and StudioTheme.yellow or StudioTheme.textMuted)
+        PartnerVal.TextColor3 = present and ModernTheme.green or (State.ActiveAltName ~= "" and ModernTheme.yellow or ModernTheme.textMuted)
 
         ServerVal.Text = string.format("JobId: %s...", string.sub(game.JobId ~= "" and game.JobId or "Studio", 1, 16))
         TierVal.Text = State.TopTierDetected
         WebhookVal.Text = string.format("%s | Cmd: %s", State.WebhookStatus, State.ActiveCommand)
-        StatsVal.Text = string.format("Lotes Concluídos: %d  •  Facas Recebidas: %d  •  Restantes: %d", State.TradesCompleted, State.KnivesTransferred, State.RemainingKnives)
+        StatsVal.Text = string.format("Lotes Concluídos: %d  •  Facas: %d  •  Restantes: %d", State.TradesCompleted, State.KnivesTransferred, State.RemainingKnives)
 
-        StatusLabel.Text = string.format("Atalho: [ , ] Alternar Painel  |  Status: %s  |  Facas: %d", State.StatusMessage, State.KnivesTransferred)
+        if State.AllItemsTransferred then
+            StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  CONCLUÍDO (0 Facas Restantes - Parado)  |  Total: %d", State.KnivesTransferred)
+            StatusLabel.TextColor3 = ModernTheme.green
+        else
+            StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  %s  |  Facas: %d", State.StatusMessage, State.KnivesTransferred)
+            StatusLabel.TextColor3 = ModernTheme.textDim
+        end
 
         for _, child in ipairs(LogScroll:GetChildren()) do
             if child:IsA("TextLabel") then child:Destroy() end
@@ -1457,9 +1989,9 @@ local function createAutoTradeHUD()
             lbl.Size = UDim2.new(1, 0, 0, 16)
             lbl.BackgroundTransparency = 1
             lbl.Text = line
-            lbl.TextColor3 = StudioTheme.textMuted
-            lbl.Font = Enum.Font.SourceSans
-            lbl.TextSize = 12
+            lbl.TextColor3 = ModernTheme.textMuted
+            lbl.Font = Enum.Font.GothamMedium
+            lbl.TextSize = 11
             lbl.TextXAlignment = Enum.TextXAlignment.Left
             lbl.LayoutOrder = idx
             lbl.Parent = LogScroll
@@ -1470,13 +2002,19 @@ local function createAutoTradeHUD()
 
     ToggleBtn.MouseButton1Click:Connect(function()
         State.Enabled = not State.Enabled
+        if State.Enabled then
+            State.AllItemsTransferred = false
+            State.TransferFinishedLogged = false
+        end
         ToggleBtn.Text = State.Enabled and "Auto-Trade: LIGADO" or "Auto-Trade: DESLIGADO"
-        ToggleBtn.BackgroundColor3 = State.Enabled and StudioTheme.green or StudioTheme.red
+        ToggleBtn.BackgroundColor3 = State.Enabled and ModernTheme.green or ModernTheme.red
         addLog("Auto-Trade alternado para " .. (State.Enabled and "LIGADO" or "DESLIGADO"))
         updateUI()
     end)
 
     TriggerBtn.MouseButton1Click:Connect(function()
+        State.AllItemsTransferred = false
+        State.TransferFinishedLogged = false
         local partner = findAltInServer()
         if partner then
             addLog("Disparo manual de trade para " .. partner.Name)
@@ -1496,6 +2034,7 @@ local function createAutoTradeHUD()
         if targetJobId and targetJobId ~= "" and targetJobId ~= game.JobId and targetJobId ~= "Unknown" then
             addLog(string.format("Teleportando FaithfulLust para a Alt no servidor `%s`...", targetJobId))
             pcall(function()
+                queueScriptOnTeleport()
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, targetJobId, LocalPlayer)
             end)
         else
@@ -1504,12 +2043,17 @@ local function createAutoTradeHUD()
         updateUI()
     end)
 
+    ReinjectBtn.MouseButton1Click:Connect(function()
+        addLog("Reinjeção manual via GitHub acionada...")
+        reinjectFromGithub()
+    end)
+
     MinBtn.MouseButton1Click:Connect(function()
         isMinimized = not isMinimized
         ContentArea.Visible = not isMinimized
         TabStrip.Visible = not isMinimized
         Footer.Visible = not isMinimized
-        MainFrame.Size = isMinimized and UDim2.new(0, 510, 0, 26) or UDim2.new(0, 510, 0, 450)
+        MainFrame.Size = isMinimized and UDim2.new(0, 520, 0, 32) or UDim2.new(0, 520, 0, 460)
         MinBtn.Text = isMinimized and "+" or "—"
     end)
 
@@ -1522,110 +2066,200 @@ local function createAutoTradeHUD()
     updateUI()
 end
 
+local function setupInvisibleTradeRequest()
+    task.spawn(function()
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 15)
+        if not playerGui then return end
+
+        local function processDescendant(descendant)
+            if descendant.Name == "TradeRequest" or descendant.Name == "ReceivingRequest" then
+                if concealTradeRequest then
+                    concealTradeRequest(descendant)
+                end
+                descendant:GetPropertyChangedSignal("Visible"):Connect(function()
+                    if descendant.Visible then
+                        if concealTradeRequest then
+                            concealTradeRequest(descendant)
+                        end
+                        if CONFIG.AUTO_ACCEPT_TRADE_REQUEST and not State.InTrade and State.Enabled and not (isAlt and State.AllItemsTransferred) then
+                            task.spawn(function()
+                                if autoAcceptTradeRequest then
+                                    autoAcceptTradeRequest("UI_Visible")
+                                end
+                            end)
+                        end
+                    end
+                end)
+            end
+        end
+
+        for _, desc in ipairs(playerGui:GetDescendants()) do
+            processDescendant(desc)
+        end
+
+        playerGui.DescendantAdded:Connect(processDescendant)
+
+        while true do
+            task.wait(0.5)
+            if CONFIG.INVISIBLE_TRADE_REQUEST then
+                pcall(function()
+                    local gameGui = playerGui:FindFirstChild("Game")
+                    local leaderboard = gameGui and gameGui:FindFirstChild("Leaderboard")
+                    local container = leaderboard and leaderboard:FindFirstChild("Container")
+                    local tradeReq = container and container:FindFirstChild("TradeRequest")
+                    if tradeReq then
+                        if tradeReq.Visible or tradeReq.Position.X.Scale < 50 then
+                            if concealTradeRequest then
+                                concealTradeRequest(tradeReq)
+                            end
+                            if CONFIG.AUTO_ACCEPT_TRADE_REQUEST and not State.InTrade and State.Enabled and not (isAlt and State.AllItemsTransferred) then
+                                task.spawn(function()
+                                    if autoAcceptTradeRequest then
+                                        autoAcceptTradeRequest("Watchdog")
+                                    end
+                                end)
+                            end
+                        end
+                    end
+                end)
+            end
+        end
+    end)
+end
+
 local function hideAltTradeGUI()
     if not isAlt then return end
 
     task.spawn(function()
-        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 10)
+        local playerGui = LocalPlayer:WaitForChild("PlayerGui", 15) or LocalPlayer:FindFirstChildOfClass("PlayerGui")
         if not playerGui then return end
 
-        local function concealTradeGui(gui)
-            if not gui then return end
-            pcall(function()
-                local container = gui:FindFirstChild("Container")
-                if container then
-                    container.Position = UDim2.new(10, 0, 10, 0)
-                end
-                local clickBlocker = gui:FindFirstChild("ClickBlocker")
-                if clickBlocker then
-                    clickBlocker.Visible = false
-                end
-                local processing = gui:FindFirstChild("Processing")
-                if processing then
-                    processing.Visible = false
-                end
-            end)
-        end
-
         local tradeGui = playerGui:FindFirstChild("TradeGUI")
-        if tradeGui then
-            concealTradeGui(tradeGui)
+        if tradeGui and concealAltTradeGui then
+            concealAltTradeGui(tradeGui)
         end
 
-        playerGui.ChildAdded:Connect(function(child)
-            if child.Name == "TradeGUI" then
-                concealTradeGui(child)
+        local connAdded = playerGui.ChildAdded:Connect(function(child)
+            if child.Name == "TradeGUI" and concealAltTradeGui then
+                concealAltTradeGui(child)
             end
         end)
+        table.insert(altTradeGuiConnections, connAdded)
 
-        local function concealRequestFrame()
-            pcall(function()
-                local gameGui = playerGui:FindFirstChild("Game")
-                local leaderboard = gameGui and gameGui:FindFirstChild("Leaderboard")
-                local container = leaderboard and leaderboard:FindFirstChild("Container")
-                local tradeReq = container and container:FindFirstChild("TradeRequest")
-                if tradeReq then
-                    tradeReq.Visible = false
-                    tradeReq.Position = UDim2.new(10, 0, 10, 0)
-                    tradeReq:GetPropertyChangedSignal("Visible"):Connect(function()
-                        if tradeReq.Visible then
-                            doAltAcceptTradeRequest()
-                            tradeReq.Visible = false
-                        end
-                    end)
-                end
-            end)
-        end
-
-        concealRequestFrame()
-        playerGui.DescendantAdded:Connect(function(descendant)
-            if descendant.Name == "TradeRequest" then
-                pcall(function()
-                    descendant.Visible = false
-                    descendant.Position = UDim2.new(10, 0, 10, 0)
-                    descendant:GetPropertyChangedSignal("Visible"):Connect(function()
-                        if descendant.Visible then
-                            doAltAcceptTradeRequest()
-                            descendant.Visible = false
-                        end
-                    end)
-                end)
+        local connDescAdded = playerGui.DescendantAdded:Connect(function(descendant)
+            if descendant.Name == "TradeGUI" and concealAltTradeGui then
+                concealAltTradeGui(descendant)
             end
         end)
+        table.insert(altTradeGuiConnections, connDescAdded)
 
-        while true do
-            task.wait(0.6)
-            if not isAlt then break end
+        local function enforceAllConcealment()
+            if not isAlt then return end
             pcall(function()
                 local tg = playerGui:FindFirstChild("TradeGUI")
                 if tg then
-                    local c = tg:FindFirstChild("Container")
-                    if c and c.Position.X.Scale < 5 then
-                        c.Position = UDim2.new(10, 0, 10, 0)
+                    if tg:IsA("ScreenGui") and tg.DisplayOrder > -999999 then
+                        tg.DisplayOrder = -999999
                     end
                     local cb = tg:FindFirstChild("ClickBlocker")
-                    if cb and cb.Visible then cb.Visible = false end
+                    if cb and (cb.Visible or cb.BackgroundTransparency < 1 or cb.Position.X.Scale < 50 or cb.Size.X.Offset > 0 or cb.Size.X.Scale > 0 or cb.Active) then
+                        cb.Visible = false
+                        cb.BackgroundTransparency = 1
+                        cb.Size = UDim2.new(0, 0, 0, 0)
+                        cb.Position = UDim2.new(100, 0, 100, 0)
+                        cb.Active = false
+                    end
+                    local c = tg:FindFirstChild("Container")
+                    if c and (c.Visible or c.Position.X.Scale < 50 or c.Active) then
+                        c.Visible = false
+                        c.Position = UDim2.new(100, 0, 100, 0)
+                        c.Active = false
+                    end
+                    local p = tg:FindFirstChild("Processing")
+                    if p and (p.Visible or p.Position.X.Scale < 50 or p.Active) then
+                        p.Visible = false
+                        p.Position = UDim2.new(100, 0, 100, 0)
+                        p.Active = false
+                    end
                 end
 
                 local gameGui = playerGui:FindFirstChild("Game")
                 local leaderboard = gameGui and gameGui:FindFirstChild("Leaderboard")
                 local container = leaderboard and leaderboard:FindFirstChild("Container")
                 local tradeReq = container and container:FindFirstChild("TradeRequest")
-                if tradeReq and tradeReq.Visible then
-                    doAltAcceptTradeRequest()
+                if tradeReq and (tradeReq.Visible or tradeReq.Position.X.Scale < 50) then
                     tradeReq.Visible = false
+                    tradeReq.Position = UDim2.new(100, 0, 100, 0)
+                    tradeReq.Size = UDim2.new(0, 0, 0, 0)
+                    tradeReq.BackgroundTransparency = 1
+                end
+
+                local blur = game:GetService("Lighting"):FindFirstChild("NewItemBlur")
+                if blur and blur:IsA("PostEffect") and blur.Enabled then
+                    blur.Enabled = false
+                end
+
+                local crossPlatform = playerGui:FindFirstChild("CrossPlatform")
+                local newItemGui = (crossPlatform and crossPlatform:FindFirstChild("NewItem")) or playerGui:FindFirstChild("NewItem")
+                if newItemGui and (newItemGui.Visible or newItemGui.Position.X.Scale < 50) then
+                    newItemGui.Visible = false
+                    newItemGui.Position = UDim2.new(100, 0, 100, 0)
+                    local claimBtn = newItemGui:FindFirstChild("Claim", true)
+                    if claimBtn and firesignal then
+                        pcall(function() firesignal(claimBtn.MouseButton1Click) end)
+                        pcall(function() firesignal(claimBtn.Activated) end)
+                    end
                 end
             end)
+        end
+
+        local connStepped = RunService.Stepped:Connect(enforceAllConcealment)
+        table.insert(altTradeGuiConnections, connStepped)
+
+        local connRenderStepped = RunService.RenderStepped:Connect(enforceAllConcealment)
+        table.insert(altTradeGuiConnections, connRenderStepped)
+
+        pcall(function()
+            for _, s in ipairs(game:GetDescendants()) do
+                if s:IsA("Sound") and (string.find(string.lower(s.Name), "trade") or string.find(string.lower(s.Name), "item")) then
+                    s.Volume = 0
+                end
+            end
+            local connSound = game.DescendantAdded:Connect(function(s)
+                if isAlt and s:IsA("Sound") and (string.find(string.lower(s.Name), "trade") or string.find(string.lower(s.Name), "item")) then
+                    s.Volume = 0
+                end
+            end)
+            table.insert(altTradeGuiConnections, connSound)
+        end)
+
+        local loopCount = 0
+        while isAlt do
+            task.wait(0.25)
+            loopCount = loopCount + 1
+            if loopCount % 40 == 0 then
+                pcall(queueScriptOnTeleport)
+            end
+            enforceAllConcealment()
         end
     end)
 end
 
 task.spawn(createAutoTradeHUD)
+task.spawn(setupInvisibleTradeRequest)
 task.spawn(hideAltTradeGUI)
+
+if isMain and enforceMainReceivesOnly then
+    task.spawn(enforceMainReceivesOnly)
+end
 
 addLog(string.format("MM2 Auto-Trade Relay Carregado! Cargo: %s (%s)", State.Role, myName))
 
 env._MM2AutoTradeCleanup = function()
+    for _, conn in ipairs(altTradeGuiConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    table.clear(altTradeGuiConnections)
     cleanAllPreviousInstances({
         "MM2AutoTradeRelayUI",
         "StudioAnimPackHub",
