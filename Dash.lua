@@ -28,7 +28,7 @@ while not LocalPlayer do
 end
 
 local CONFIG = {
-    MAIN_USERNAME = "BG_0o",
+    MAIN_USERNAME = "FaithfulLust",
     DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1547087696030208091/n3x6RW5UyBNyOA9uuZsmamVhfCublmjgecbjxFzXXePYDcPPmOgYYHoSnt5LmVgynwso",
     DISCORD_MESSAGE_ID  = "1547087791182184549",
     ITEMS_PER_TRADE = 4,
